@@ -8,8 +8,6 @@
 
 `dart_source_graph` statically analyzes your Dart/Flutter source and produces a compact, deterministic `graph.json`: every file, class, import, inheritance link, and semantic role (Widget, Notifier, Bloc…), each edge tagged with how confidently it was derived. Feed it to your AI, query it from CI, or explore it visually — without touching a single source file.
 
-**[→ Live demo: dart_source_graph analyzing itself](https://guzcabq.github.io/dartgraph/doc/graph.html)**
-
 ![dart_source_graph HTML viewer — interactive architecture map](https://raw.githubusercontent.com/GuzCabQ/dartgraph/main/doc/viewer.png)
 
 ---
