@@ -1,0 +1,4 @@
+# Artefactos internos de desarrollo — no se publican en pub.dev.
+docs/
+tool/embed_template.dart
+build/

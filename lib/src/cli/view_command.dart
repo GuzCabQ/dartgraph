@@ -74,8 +74,7 @@ class ViewCommand extends Command<int> {
     final outputDir = outputPath != null
         ? p.dirname(p.canonicalize(outputPath))
         : p.dirname(canonicalGraph);
-    final fileName =
-        outputPath != null ? p.basename(outputPath) : 'graph.html';
+    final fileName = outputPath != null ? p.basename(outputPath) : 'graph.html';
 
     try {
       final htmlPath = writeHtmlViewerFromJson(

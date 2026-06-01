@@ -13,7 +13,10 @@ void main() {
 
     test('reemplaza el placeholder con el JSON', () {
       const json = '{"schema_version":"1.0.0"}';
-      final path = writeHtmlViewerFromJson(jsonString: json, outputDir: tmp.path);
+      final path = writeHtmlViewerFromJson(
+        jsonString: json,
+        outputDir: tmp.path,
+      );
       final html = File(path).readAsStringSync();
       expect(html, contains(json));
       expect(html, isNot(contains('/* GRAPH_JSON_PLACEHOLDER */')));
@@ -26,7 +29,10 @@ void main() {
     });
 
     test('fileName por defecto es graph.html', () {
-      final path = writeHtmlViewerFromJson(jsonString: '{}', outputDir: tmp.path);
+      final path = writeHtmlViewerFromJson(
+        jsonString: '{}',
+        outputDir: tmp.path,
+      );
       expect(path, endsWith('graph.html'));
       expect(File(path).existsSync(), isTrue);
     });
@@ -41,7 +47,10 @@ void main() {
     });
 
     test('retorna ruta absoluta', () {
-      final path = writeHtmlViewerFromJson(jsonString: '{}', outputDir: tmp.path);
+      final path = writeHtmlViewerFromJson(
+        jsonString: '{}',
+        outputDir: tmp.path,
+      );
       expect(path, startsWith('/'));
     });
 
@@ -64,7 +73,11 @@ void main() {
         inputsFingerprint: 'sha256:abc',
         root: '.',
       );
-      final path = writeHtmlViewer(graph: graph, meta: meta, outputDir: tmp.path);
+      final path = writeHtmlViewer(
+        graph: graph,
+        meta: meta,
+        outputDir: tmp.path,
+      );
       final html = File(path).readAsStringSync();
       expect(html, contains('"test_pkg"'));
       expect(html, contains('"schema_version"'));

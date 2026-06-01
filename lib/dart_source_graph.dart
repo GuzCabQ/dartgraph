@@ -17,5 +17,6 @@ export 'src/contracts/code_graph.dart';
 export 'src/core/builder.dart' show CodeGraphBuilder, kBuiltinRoleMap;
 export 'src/core/files.dart' show collectDartFiles;
 export 'src/core/query.dart' show CodeGraphQuery;
+export 'src/core/reporter.dart' show generateReport;
 export 'src/core/resolver.dart' show CodeGraphResolver;
 export 'src/core/wiring.dart' show addWiringEdges;

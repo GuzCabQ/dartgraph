@@ -13,7 +13,9 @@ void main() {
 
   final source = File(sourcePath);
   if (!source.existsSync()) {
-    stderr.writeln('Error: $sourcePath no existe. Ejecutar desde la raíz del repo.');
+    stderr.writeln(
+      'Error: $sourcePath no existe. Ejecutar desde la raíz del repo.',
+    );
     exit(1);
   }
 
@@ -38,7 +40,8 @@ void main() {
 
   final tripleQuoteIdx = content.indexOf("'''");
   if (tripleQuoteIdx != -1) {
-    final line = '\n'.allMatches(content.substring(0, tripleQuoteIdx)).length + 1;
+    final line =
+        '\n'.allMatches(content.substring(0, tripleQuoteIdx)).length + 1;
     stderr.writeln(
       "Error: $sourcePath contiene ''' en la línea $line — rompería el "
       'raw string de Dart.',
