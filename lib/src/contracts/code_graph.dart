@@ -22,7 +22,8 @@ enum GraphRelation {
   mixesIn,
   references, // fase-1b: clase -> un tipo en sus firmas de miembro
   wiring, // clase -> el archivo manifest que la registra (DI/tabla de rutas)
-  calls, // fase-2: miembro -> nombre de método invocado (por nombre, ambiguo)
+  calls, // fase-2: miembro -> declaración de método/función invocada (resuelta)
+  instantiates, // fase-2: miembro -> clase nombrada en una creación de instancia
 }
 
 /// Procedencia de una arista. La fase-1a emite solo [extracted].
@@ -50,6 +51,7 @@ const Map<GraphRelation, String> _relationJson = {
   GraphRelation.references: 'references',
   GraphRelation.wiring: 'wiring',
   GraphRelation.calls: 'calls',
+  GraphRelation.instantiates: 'instantiates',
 };
 
 const Map<GraphConfidence, String> _confidenceJson = {

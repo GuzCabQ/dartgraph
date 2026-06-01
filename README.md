@@ -124,6 +124,53 @@ dart_source_graph query god-nodes --limit 10 -i graph.json
 dart_source_graph view --graph graph.json --output docs/viewer.html
 ```
 
+### Resolution modes
+
+`build` runs in one of two modes:
+
+- **Parse-only (default)** — fast, syntactic. Emits structure (files, classes, mixins,
+  enums, methods, functions), `contains`, imports/exports, and name-based inheritance
+  edges. It does **not** emit `calls` or `instantiates` — resolving the real target
+  requires semantic analysis.
+- **`--resolve` (semantic)** — slower, requires `dart pub get`. Adds everything parse-only
+  emits, plus:
+  - `calls` edges resolved to the **real internal declaration** (`extracted`), and
+    state-management API calls (`watch`, `read`, `put`, …) flagged as `external` (`inferred`).
+  - `instantiates` edges to the named internal class (`extracted`).
+  - `references` edges and re-pointed inheritance.
+  - The **State Flow** section of the report.
+
+Precise call/instantiation analysis and State Flow require `--resolve`:
+
+```shell
+dart_source_graph build --resolve --html --output graph.json
+```
+
+### Output: where files land
+
+Pass `--output` (`-o`) to keep the JSON and HTML on disk; the viewer is always written to
+the same directory as the JSON:
+
+| Invocation | JSON | HTML (with `--html`) |
+| --- | --- | --- |
+| `build --output graph.json` | `graph.json` at the root | `graph.html` **next to the JSON** |
+| `build --output graph/graph.json` | `graph/graph.json` | `graph/graph.html` |
+| `build` _(no `--output`)_ | printed to **stdout** | `./graph/graph.html` |
+
+The HTML file is always named `graph.html`, regardless of the JSON's name. Relative
+`--output` paths resolve against `--project-root` (default: `.`).
+
+> **Note — without `--output`:** the JSON is printed to `stdout` (handy for pipes like
+> `build | jq ...`) and is not saved to disk; in that case `--html` lands in a fixed
+> `./graph/` folder. So `build --html` without `--output` leaves `./graph/graph.html` but
+> no `graph.json` on disk.
+
+### Checking the version
+
+```shell
+dart_source_graph --version   # or -v
+```
+
 ---
 
 ## What gets analyzed

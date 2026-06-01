@@ -13,12 +13,15 @@
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
+import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:path/path.dart' as p;
 
 import '../config/source_graph_config.dart';
 import '../contracts/code_graph.dart';
+import 'state_api.dart';
 
 class CodeGraphResolver {
   int _resolved = 0;
@@ -143,6 +146,22 @@ class CodeGraphResolver {
             line,
           );
         }
+        // Resolución de calls/instantiates sobre el AST resuelto.
+        // Snapshot pre-walk: los nodos external que el visitante agrega durante
+        // el recorrido (allowlist) quedan intencionalmente fuera de este set,
+        // que solo sirve para verificar pertenencia de declaraciones internas.
+        final nodeIds = nodes.keys.toSet();
+        result.unit.accept(_CallResolver(
+          rel: rel,
+          projectRoot: projectRoot,
+          nodeIds: nodeIds,
+          nodes: nodes,
+          out: fileRefs, // se vuelca en addedReferences -> finalEdges -> pasa por el GC de externos
+          lineOf: (offset) => result.lineInfo.getLocation(offset).lineNumber,
+          relOfAny: _relOfAnyElement,
+          ownerOf: _ownerOf,
+          relOfInterface: _relOfElement,
+        ));
         addedInheritance.addAll(fileEdges);
         addedReferences.addAll(fileRefs);
         resolvedRels.add(rel);
@@ -247,6 +266,22 @@ class CodeGraphResolver {
     return _rel(srcFull, projectRoot);
   }
 
+  /// Ruta relativa al proyecto para cualquier [Element] con fragmentos.
+  /// Devuelve null si el elemento no tiene fragmento de librería (sintético).
+  String? _relOfAnyElement(Element element, String projectRoot) {
+    final libFrag = element.firstFragment.libraryFragment;
+    if (libFrag == null) return null;
+    return _rel(libFrag.source.fullName, projectRoot);
+  }
+
+  /// Nombre del owner para construir el id de miembro: el nombre del
+  /// InterfaceElement contenedor, o '' si el elemento es top-level.
+  String _ownerOf(Element element) {
+    final enc = element.enclosingElement;
+    if (enc is InterfaceElement) return enc.name ?? '';
+    return '';
+  }
+
   bool _isDartCoreObject(InterfaceType t) =>
       t.element.name == 'Object' && t.element.library.isInSdk;
 
@@ -325,5 +360,144 @@ class CodeGraphResolver {
         _collectInterfaceElements(arg, out);
       }
     }
+  }
+}
+
+/// Recorre el AST resuelto de un archivo y emite aristas `calls`/`instantiates`
+/// resueltas semánticamente. Atribuye cada invocación al método/función miembro
+/// que la contiene. Solo emite cuando el `sourceId` existe en [nodeIds].
+class _CallResolver extends RecursiveAstVisitor<void> {
+  _CallResolver({
+    required this.rel,
+    required this.projectRoot,
+    required this.nodeIds,
+    required this.nodes,
+    required this.out,
+    required this.lineOf,
+    required this.relOfAny,
+    required this.ownerOf,
+    required this.relOfInterface,
+  });
+
+  final String rel;
+  final String projectRoot;
+  final Set<String> nodeIds;
+  final Map<String, GraphNode> nodes;
+  final List<GraphEdge> out;
+  final int Function(int offset) lineOf;
+  final String? Function(Element, String) relOfAny;
+  final String Function(Element) ownerOf;
+  final String Function(InterfaceElement, String) relOfInterface;
+
+  final Set<String> _seen = <String>{};
+  String _owner = '';
+  String? _sourceId;
+
+  void _emit(String target, GraphRelation relation, GraphConfidence c, int line) {
+    final key = '$_sourceId|$target|${graphRelationToJson(relation)}|${graphConfidenceToJson(c)}';
+    if (!_seen.add(key)) return;
+    out.add(GraphEdge(source: _sourceId!, target: target, relation: relation, confidence: c, line: line));
+  }
+
+  @override
+  void visitClassDeclaration(ClassDeclaration node) {
+    final prev = _owner;
+    // analyzer 13.0.0: ClassDeclaration expone el nombre vía
+    // `namePart.typeName` (ya no existe `node.name`).
+    _owner = node.namePart.typeName.lexeme;
+    super.visitClassDeclaration(node);
+    _owner = prev;
+  }
+
+  @override
+  void visitMixinDeclaration(MixinDeclaration node) {
+    final prev = _owner;
+    _owner = node.name.lexeme;
+    super.visitMixinDeclaration(node);
+    _owner = prev;
+  }
+
+  @override
+  void visitEnumDeclaration(EnumDeclaration node) {
+    final prev = _owner;
+    // analyzer 13.0.0: EnumDeclaration expone el nombre vía
+    // `namePart.typeName` (ya no existe `node.name`).
+    _owner = node.namePart.typeName.lexeme;
+    super.visitEnumDeclaration(node);
+    _owner = prev;
+  }
+
+  @override
+  void visitMethodDeclaration(MethodDeclaration node) {
+    final id = GraphNodeId.member(relativePath: rel, owner: _owner, name: node.name.lexeme, kind: GraphNodeKind.method);
+    final prev = _sourceId;
+    _sourceId = nodeIds.contains(id) ? id : null;
+    super.visitMethodDeclaration(node);
+    _sourceId = prev;
+  }
+
+  @override
+  void visitFunctionDeclaration(FunctionDeclaration node) {
+    if (node.parent is CompilationUnit) {
+      final id = GraphNodeId.member(relativePath: rel, owner: '', name: node.name.lexeme, kind: GraphNodeKind.function);
+      final prev = _sourceId;
+      _sourceId = nodeIds.contains(id) ? id : null;
+      super.visitFunctionDeclaration(node);
+      _sourceId = prev;
+    } else {
+      super.visitFunctionDeclaration(node);
+    }
+  }
+
+  // Nota: los cuerpos de constructores no son orígenes de calls — el grafo no
+  // modela nodos de constructor, por lo que `_sourceId` queda null dentro de
+  // ellos y sus invocaciones se descartan (límite de alcance intencional).
+  @override
+  void visitMethodInvocation(MethodInvocation node) {
+    if (_sourceId != null) {
+      final el = node.methodName.element;
+      final line = lineOf(node.methodName.offset);
+      var emitted = false;
+      if (el != null) {
+        final calleeRel = relOfAny(el, projectRoot);
+        final calleeName = el.name;
+        if (calleeRel != null && calleeName != null && calleeName.isNotEmpty) {
+          final owner = ownerOf(el);
+          final kind = owner.isEmpty ? GraphNodeKind.function : GraphNodeKind.method;
+          final candidate = GraphNodeId.member(relativePath: calleeRel, owner: owner, name: calleeName, kind: kind);
+          if (nodeIds.contains(candidate)) {
+            _emit(candidate, GraphRelation.calls, GraphConfidence.extracted, line);
+            emitted = true;
+          }
+        }
+      }
+      if (!emitted) {
+        final invoked = node.methodName.name;
+        if (kStateApiCalls.contains(invoked)) {
+          final extId = GraphNodeId.external(invoked);
+          nodes.putIfAbsent(extId, () => GraphNode(id: extId, label: invoked, kind: GraphNodeKind.external));
+          _emit(extId, GraphRelation.calls, GraphConfidence.inferred, line);
+        }
+      }
+    }
+    super.visitMethodInvocation(node);
+  }
+
+  @override
+  void visitInstanceCreationExpression(InstanceCreationExpression node) {
+    if (_sourceId != null) {
+      final el = node.constructorName.type.element;
+      if (el is InterfaceElement) {
+        final r = relOfInterface(el, projectRoot);
+        final name = el.name;
+        if (name != null && name.isNotEmpty) {
+          final classId = GraphNodeId.declaration(relativePath: r, name: name, kind: GraphNodeKind.class_);
+          if (nodeIds.contains(classId)) {
+            _emit(classId, GraphRelation.instantiates, GraphConfidence.extracted, lineOf(node.offset));
+          }
+        }
+      }
+    }
+    super.visitInstanceCreationExpression(node);
   }
 }

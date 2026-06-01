@@ -3,7 +3,7 @@ description: >
   Generates a semantic dependency graph of Dart/Flutter source code.
   Identifies Widgets, Notifiers, Blocs and Controllers with confidence-rated
   edges. Designed for AI-assisted codebase analysis and architecture audits.
-version: 0.1.1
+version: 0.1.2
 repository: https://github.com/GuzCabQ/dartgraph
 issue_tracker: https://github.com/GuzCabQ/dartgraph/issues
 
@@ -21,9 +21,7 @@ environment:
   sdk: ^3.12.0
 
 dependencies:
-  # Fijado en 12.x mientras flutter_test pinie test_api: 0.7.11.
-  # Subir a ^13.0.0 cuando Flutter lo permita.
-  analyzer: ^12.0.0
+  analyzer: ^13.0.0
   args: ^2.7.0
   crypto: ^3.0.7
   path: ^1.9.1

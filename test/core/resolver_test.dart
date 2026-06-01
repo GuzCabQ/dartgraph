@@ -388,6 +388,109 @@ void main() {
     );
   });
 
+  group('resolver — calls internas', () {
+    test('resuelve call método→método interno a la declaración real', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class Svc {
+  int helper() => 1;
+  int run() => helper();
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final call = g.edges.firstWhere(
+        (e) => e.relation == GraphRelation.calls,
+        orElse: () => throw StateError('no calls'),
+      );
+      expect(call.source, GraphNodeId.member(relativePath: 'lib/a.dart', owner: 'Svc', name: 'run', kind: GraphNodeKind.method));
+      expect(call.target, GraphNodeId.member(relativePath: 'lib/a.dart', owner: 'Svc', name: 'helper', kind: GraphNodeKind.method));
+      expect(call.confidence, GraphConfidence.extracted);
+    });
+
+    test('homónimos: resuelve al owner correcto, no por nombre', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class A { int m() => 1; }
+class B {
+  final A a = A();
+  int call2() => a.m();
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final hasCorrect = g.edges.any((e) =>
+          e.relation == GraphRelation.calls &&
+          e.source == GraphNodeId.member(relativePath: 'lib/a.dart', owner: 'B', name: 'call2', kind: GraphNodeKind.method) &&
+          e.target == GraphNodeId.member(relativePath: 'lib/a.dart', owner: 'A', name: 'm', kind: GraphNodeKind.method));
+      expect(hasCorrect, isTrue);
+    });
+
+    test('call a método de mixin interno resuelve a su nodo', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+mixin Retry { void retry() {} }
+class C with Retry {
+  void go() { retry(); }
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final hit = g.edges.any((e) =>
+          e.relation == GraphRelation.calls &&
+          e.target == GraphNodeId.member(relativePath: 'lib/a.dart', owner: 'Retry', name: 'retry', kind: GraphNodeKind.method));
+      expect(hit, isTrue);
+    });
+
+    test('call a función top-level interna resuelve', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+int helper() => 1;
+int caller() => helper();
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final hit = g.edges.any((e) =>
+          e.relation == GraphRelation.calls &&
+          e.source == GraphNodeId.member(relativePath: 'lib/a.dart', owner: '', name: 'caller', kind: GraphNodeKind.function) &&
+          e.target == GraphNodeId.member(relativePath: 'lib/a.dart', owner: '', name: 'helper', kind: GraphNodeKind.function));
+      expect(hit, isTrue);
+    });
+
+    test('call a método del SDK fuera de allowlist se descarta', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class P {
+  void go() { print('hi'); }
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      expect(g.edges.where((e) => e.relation == GraphRelation.calls), isEmpty);
+    });
+
+    test('archivo no resoluble degrada sin emitir calls ni romper', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class Svc {
+  int helper() => 1;
+  int run() => helper();
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final files = _dartFiles(root.path);
+      final base = CodeGraphBuilder().build(projectRoot: root.path, filePaths: files, config: const SourceGraphConfig());
+      final g = await _PartialResolver(files.first).resolve(base, projectRoot: root.path, filePaths: files, config: const SourceGraphConfig());
+      expect(g.edges.where((e) => e.relation == GraphRelation.calls), isEmpty);
+    });
+  });
+
   group('CodeGraphResolver — orphan external GC', () {
     test(
       'orphan external twin left by inheritance retargeting is dropped',
@@ -535,5 +638,90 @@ class Child extends Base {}
         );
       },
     );
+  });
+
+  group('resolver — allowlist de estado', () {
+    test('llamada a un nombre del allowlist no resoluble se conserva como external inferred',
+        () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class Widget {
+  final dynamic ref = null;
+  void build() { ref.watch(0); }
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final watchEdge = g.edges.where((e) =>
+          e.relation == GraphRelation.calls &&
+          e.target == GraphNodeId.external('watch'));
+      expect(watchEdge, isNotEmpty,
+          reason: 'watch está en kStateApiCalls; al no resolver a interno cae al allowlist');
+      expect(watchEdge.first.confidence, GraphConfidence.inferred);
+    });
+  });
+
+  group('resolver — instantiates', () {
+    test('creación de clase interna emite instantiates extracted', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class Dep {}
+class Owner {
+  Dep make() => Dep();
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final inst = g.edges.where((e) => e.relation == GraphRelation.instantiates);
+      expect(inst, isNotEmpty);
+      expect(inst.first.source, GraphNodeId.member(relativePath: 'lib/a.dart', owner: 'Owner', name: 'make', kind: GraphNodeKind.method));
+      expect(inst.first.target, GraphNodeId.declaration(relativePath: 'lib/a.dart', name: 'Dep', kind: GraphNodeKind.class_));
+      expect(inst.first.confidence, GraphConfidence.extracted);
+    });
+
+    test('creación de clase del SDK no emite instantiates', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class Owner {
+  Object make() => Object();
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      expect(g.edges.where((e) => e.relation == GraphRelation.instantiates), isEmpty);
+    });
+
+    test('factory redirigido apunta a la clase NOMBRADA, no a la construida', () async {
+      final root = _fixture({
+        'lib/a.dart': '''
+class Facade {
+  factory Facade() = _FacadeImpl;
+  Facade._();
+}
+class _FacadeImpl extends Facade {
+  _FacadeImpl() : super._();
+}
+class Owner {
+  Facade build() => Facade();
+}
+''',
+      });
+      addTearDown(() => Directory(root.path).deleteSync(recursive: true));
+      final g = await _build(root.path, resolve: true);
+      final inst = g.edges.where((e) => e.relation == GraphRelation.instantiates);
+      expect(
+        inst.any((e) => e.target == GraphNodeId.declaration(relativePath: 'lib/a.dart', name: 'Facade', kind: GraphNodeKind.class_)),
+        isTrue,
+        reason: 'apunta a la clase nombrada Facade',
+      );
+      expect(
+        inst.any((e) => e.target == GraphNodeId.declaration(relativePath: 'lib/a.dart', name: '_FacadeImpl', kind: GraphNodeKind.class_)),
+        isFalse,
+        reason: 'NO apunta a la implementación redirigida',
+      );
+    });
   });
 }

@@ -12,7 +12,6 @@ import 'package:analyzer/dart/analysis/features.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
-import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/file_system/file_system.dart' as analyzer_fs;
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
@@ -251,46 +250,15 @@ class CodeGraphBuilder {
             lineOf: lineOf,
           );
           // Procesar miembros de la clase: métodos.
-          final classId = GraphNodeId.declaration(
-            relativePath: rel,
-            name: name,
-            kind: GraphNodeKind.class_,
+          _emitMemberMethods(
+            nodes,
+            edges,
+            members: decl.body.members,
+            rel: rel,
+            ownerName: name,
+            ownerKind: GraphNodeKind.class_,
+            lineOf: lineOf,
           );
-          for (final member in decl.body.members) {
-            if (member is MethodDeclaration) {
-              final mName = member.name.lexeme;
-              final mLine = lineOf(member.name.offset);
-              final mId = GraphNodeId.member(
-                relativePath: rel,
-                owner: name,
-                name: mName,
-                kind: GraphNodeKind.method,
-              );
-              nodes[mId] = GraphNode(
-                id: mId,
-                label: '$name.$mName',
-                kind: GraphNodeKind.method,
-                file: rel,
-                line: mLine,
-              );
-              edges.add(
-                GraphEdge(
-                  source: classId,
-                  target: mId,
-                  relation: GraphRelation.contains,
-                  confidence: GraphConfidence.extracted,
-                  line: mLine,
-                ),
-              );
-              _collectCalls(
-                nodes,
-                edges,
-                sourceId: mId,
-                body: member.body,
-                lineOf: lineOf,
-              );
-            }
-          }
         } else if (decl is MixinDeclaration) {
           final name = decl.name.lexeme;
           final declLine = lineOf(decl.name.offset);
@@ -310,6 +278,15 @@ class CodeGraphBuilder {
             declName: name,
             declKind: GraphNodeKind.mixin_,
             implementsTypes: decl.implementsClause?.interfaces,
+            lineOf: lineOf,
+          );
+          _emitMemberMethods(
+            nodes,
+            edges,
+            members: decl.body.members,
+            rel: rel,
+            ownerName: name,
+            ownerKind: GraphNodeKind.mixin_,
             lineOf: lineOf,
           );
         } else if (decl is EnumDeclaration) {
@@ -332,6 +309,15 @@ class CodeGraphBuilder {
             declKind: GraphNodeKind.enum_,
             withTypes: decl.withClause?.mixinTypes,
             implementsTypes: decl.implementsClause?.interfaces,
+            lineOf: lineOf,
+          );
+          _emitMemberMethods(
+            nodes,
+            edges,
+            members: decl.body.members,
+            rel: rel,
+            ownerName: name,
+            ownerKind: GraphNodeKind.enum_,
             lineOf: lineOf,
           );
         } else if (decl is FunctionDeclaration) {
@@ -359,13 +345,6 @@ class CodeGraphBuilder {
               confidence: GraphConfidence.extracted,
               line: fLine,
             ),
-          );
-          _collectCalls(
-            nodes,
-            edges,
-            sourceId: fId,
-            body: decl.functionExpression.body,
-            lineOf: lineOf,
           );
         }
       }
@@ -406,38 +385,46 @@ class CodeGraphBuilder {
     return null;
   }
 
-  /// Recorre [body] y emite una arista `calls` desde [sourceId] a un nodo externo
-  /// por nombre para cada invocación de método. La resolución por nombre es
-  /// inherentemente imprecisa, por lo que toda arista es [GraphConfidence.ambiguous].
-  void _collectCalls(
+  /// Emite un nodo `method` + arista `contains` por cada [MethodDeclaration] en
+  /// [members], desde el nodo dueño (clase/mixin/enum) hacia el método.
+  void _emitMemberMethods(
     Map<String, GraphNode> nodes,
     List<GraphEdge> edges, {
-    required String sourceId,
-    required AstNode body,
+    required List<ClassMember> members,
+    required String rel,
+    required String ownerName,
+    required GraphNodeKind ownerKind,
     required int Function(int) lineOf,
   }) {
-    body.accept(
-      _CallCollector((methodName, offset) {
-        final tId = GraphNodeId.external(methodName);
-        nodes.putIfAbsent(
-          tId,
-          () => GraphNode(
-            id: tId,
-            label: methodName,
-            kind: GraphNodeKind.external,
-          ),
-        );
-        edges.add(
-          GraphEdge(
-            source: sourceId,
-            target: tId,
-            relation: GraphRelation.calls,
-            confidence: GraphConfidence.ambiguous,
-            line: lineOf(offset),
-          ),
-        );
-      }),
-    );
+    final ownerId = GraphNodeId.declaration(
+      relativePath: rel, name: ownerName, kind: ownerKind);
+    for (final member in members) {
+      if (member is! MethodDeclaration) continue;
+      final mName = member.name.lexeme;
+      final mLine = lineOf(member.name.offset);
+      final mId = GraphNodeId.member(
+        relativePath: rel,
+        owner: ownerName,
+        name: mName,
+        kind: GraphNodeKind.method,
+      );
+      nodes[mId] = GraphNode(
+        id: mId,
+        label: '$ownerName.$mName',
+        kind: GraphNodeKind.method,
+        file: rel,
+        line: mLine,
+      );
+      edges.add(
+        GraphEdge(
+          source: ownerId,
+          target: mId,
+          relation: GraphRelation.contains,
+          confidence: GraphConfidence.extracted,
+          line: mLine,
+        ),
+      );
+    }
   }
 
   /// Agrega el nodo de declaración y la arista contains desde el archivo.
@@ -631,16 +618,3 @@ class CodeGraphBuilder {
   }
 }
 
-/// Visita el cuerpo de un miembro y reporta cada invocación de método por nombre.
-/// Usado por [CodeGraphBuilder] para emitir aristas `calls`.
-class _CallCollector extends RecursiveAstVisitor<void> {
-  _CallCollector(this.onCall);
-
-  final void Function(String methodName, int offset) onCall;
-
-  @override
-  void visitMethodInvocation(MethodInvocation node) {
-    onCall(node.methodName.name, node.methodName.offset);
-    super.visitMethodInvocation(node);
-  }
-}

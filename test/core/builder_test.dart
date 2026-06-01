@@ -446,50 +446,32 @@ void helper() {}
       );
     });
   });
-  group('CodeGraphBuilder — aristas calls (slice-2 WS-D)', () {
-    test(
-      'emite aristas calls desde el cuerpo de un método, marcadas ambiguous (por nombre)',
-      () async {
-        final root = _fixture({
-          'pubspec.yaml': 'name: demo\n',
-          'lib/src/presentation/home.dart': '''
-class Home extends ConsumerWidget {
-  build(context, ref) {
-    ref.watch(counterProvider);
-    return null;
+  group('CodeGraphBuilder — sin aristas calls en fase sintáctica', () {
+    test('el builder no emite ninguna arista calls (se resuelven en el resolver)',
+        () {
+      final dir = Directory.systemTemp.createTempSync('aflow_builder_nc_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/lib/w.dart')
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('''
+class W {
+  void build() {
+    helper();
+    something.watch();
   }
 }
-''',
-        });
-        addTearDown(() => root.deleteSync(recursive: true));
-
-        final graph = CodeGraphBuilder().build(
-          projectRoot: root.path,
-          filePaths: _dartFiles(root.path),
-          config: _configWithLayers,
-        );
-
-        const rel = 'lib/src/presentation/home.dart';
-        final buildId = GraphNodeId.member(
-          relativePath: rel,
-          owner: 'Home',
-          name: 'build',
-          kind: GraphNodeKind.method,
-        );
-        final callEdge = graph.edges.where(
-          (e) =>
-              e.source == buildId &&
-              e.relation == GraphRelation.calls &&
-              e.target == GraphNodeId.external('watch'),
-        );
-        expect(
-          callEdge,
-          isNotEmpty,
-          reason: 'ref.watch(...) se convierte en arista calls',
-        );
-        expect(callEdge.first.confidence, GraphConfidence.ambiguous);
-      },
-    );
+void helper() {}
+''');
+      final graph = CodeGraphBuilder().build(
+        projectRoot: dir.path,
+        filePaths: ['${dir.path}/lib/w.dart'],
+        config: const SourceGraphConfig(),
+      );
+      expect(
+        graph.edges.where((e) => e.relation == GraphRelation.calls),
+        isEmpty,
+      );
+    });
   });
   group('CodeGraphBuilder — archivos y directivas', () {
     test(
@@ -639,6 +621,64 @@ class Home extends ConsumerWidget {
         expect(builder.skippedFiles, 1);
       },
     );
+  });
+  group('CodeGraphBuilder — miembros de mixin y enum', () {
+    test('emite nodos method + contains para métodos de mixin y enum', () {
+      final dir = Directory.systemTemp.createTempSync('aflow_builder_me_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/lib/x.dart')
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('''
+mixin Retry {
+  void retry() {}
+}
+enum Status {
+  ok, bad;
+  bool get isOk => this == Status.ok;
+  void describe() {}
+}
+''');
+      final graph = CodeGraphBuilder().build(
+        projectRoot: dir.path,
+        filePaths: ['${dir.path}/lib/x.dart'],
+        config: const SourceGraphConfig(),
+      );
+      final methodIds = graph.nodes
+          .where((n) => n.kind == GraphNodeKind.method)
+          .map((n) => n.id)
+          .toSet();
+      expect(
+        methodIds,
+        contains(GraphNodeId.member(
+          relativePath: 'lib/x.dart', owner: 'Retry', name: 'retry',
+          kind: GraphNodeKind.method)),
+      );
+      expect(
+        methodIds,
+        contains(GraphNodeId.member(
+          relativePath: 'lib/x.dart', owner: 'Status', name: 'describe',
+          kind: GraphNodeKind.method)),
+      );
+      expect(
+        graph.edges.any((e) =>
+            e.relation == GraphRelation.contains &&
+            e.source == GraphNodeId.declaration(
+                relativePath: 'lib/x.dart', name: 'Retry',
+                kind: GraphNodeKind.mixin_) &&
+            e.target == GraphNodeId.member(
+                relativePath: 'lib/x.dart', owner: 'Retry', name: 'retry',
+                kind: GraphNodeKind.method)),
+        isTrue,
+      );
+      expect(
+        graph.edges.any((e) =>
+            e.relation == GraphRelation.contains &&
+            e.source == GraphNodeId.declaration(
+                relativePath: 'lib/x.dart', name: 'Status',
+                kind: GraphNodeKind.enum_)),
+        isTrue,
+      );
+    });
   });
   _fingerprintGroup();
 

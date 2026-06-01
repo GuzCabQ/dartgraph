@@ -4,6 +4,7 @@
 // impact(), neighbors(), godNodes() y utilidades de estructura de directorios.
 
 import '../contracts/code_graph.dart';
+import 'state_api.dart';
 
 /// Relaciones donde el source *depende del* target. [CodeGraphQuery.impact]
 /// las recorre en reversa. `contains`/`exports`/`part`/`partOf`/`wiring` están
@@ -232,14 +233,6 @@ class CodeGraphQuery {
     final paths = counts.keys.toList()..sort();
     return [for (final pth in paths) (path: pth, fileCount: counts[pth]!)];
   }
-
-  /// Nombres de llamadas a la API de estado reconocidos en los frameworks soportados.
-  /// Usado para filtrar las ruidosas aristas `calls` crudas al subconjunto relevante
-  /// para dependencias.
-  static const Set<String> kStateApiCalls = {
-    'watch', 'read', 'listen', 'select', // riverpod / provider
-    'find', 'put', 'lazyPut', 'putAsync', // getx
-  };
 
   /// Para cada nodo con rol etiquetado, el conjunto de llamadas a la API de estado
   /// que hacen sus métodos miembro (e.g. un `riverpod.consumer_widget` que llama

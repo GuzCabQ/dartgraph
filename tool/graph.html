@@ -686,9 +686,10 @@ window.__SAMPLE_GRAPH__ = {
     mixes_in:   { color: "#34d399", dash: "1.5,4", width: 1.6, arrow: true },
     references: { color: "#94a3b8", dash: "4,4",   width: 1,   arrow: false },
     wiring:     { color: "#f87171", dash: null,    width: 1.8, arrow: true, doubleArrow: true },
-    calls:      { color: "#fbbf24", dash: "1.5,4", width: 1,   arrow: true }
+    calls:      { color: "#fbbf24", dash: "1.5,4", width: 1,   arrow: true },
+    instantiates: { color: "#2dd4bf", dash: "2,3", width: 1.4, arrow: true }
   };
-  const REL_ORDER = ["imports", "exports", "part", "part_of", "contains", "extends", "implements", "mixes_in", "references", "wiring", "calls"];
+  const REL_ORDER = ["imports", "exports", "part", "part_of", "contains", "extends", "implements", "mixes_in", "references", "wiring", "calls", "instantiates"];
   const CONF_OPACITY = { extracted: 1, inferred: 0.65, ambiguous: 0.35 };
   const CONF_ORDER = ["extracted", "inferred", "ambiguous"];
   const CONF_DESC = { extracted: "AST-proven", inferred: "heuristic", ambiguous: "name-only" };
