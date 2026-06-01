@@ -2,3 +2,6 @@
 docs/
 tool/embed_template.dart
 build/
+# Visor HTML y grafo generados — demasiado grandes para el package.
+doc/graph.html
+doc/graph.json

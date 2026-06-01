@@ -9,7 +9,7 @@ class LayerConfig {
   /// Nombre de la capa, e.g. "core", "adapters", "presentation".
   final String name;
 
-  /// Patrones glob o prefijos de directorio. Ej: ['lib/src/core/', 'lib/src/domain/**'].
+  /// Patrones glob o prefijos de directorio. Ej: `['lib/src/core/', 'lib/src/domain/**']`.
   final List<String> paths;
 
   const LayerConfig({required this.name, required this.paths});

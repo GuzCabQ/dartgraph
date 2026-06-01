@@ -9,10 +9,10 @@ issue_tracker: https://github.com/GuzCabQ/dartgraph/issues
 
 topics:
   - dart
+  - flutter
   - static-analysis
   - ast
   - graph
-  - code-analysis
 
 executables:
   dart_source_graph:
