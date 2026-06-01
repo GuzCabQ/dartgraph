@@ -10,6 +10,8 @@
 
 **[→ Live demo: dart_source_graph analyzing itself](https://guzcabq.github.io/dartgraph/doc/graph.html)**
 
+![dart_source_graph HTML viewer — interactive architecture map](https://raw.githubusercontent.com/GuzCabQ/dartgraph/main/doc/viewer.png)
+
 ---
 
 ## Why dart_source_graph?

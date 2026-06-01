@@ -2,6 +2,8 @@
 docs/
 tool/embed_template.dart
 build/
-# Visor HTML y grafo generados — demasiado grandes para el package.
+# Artefactos de doc/ — demasiado grandes o irrelevantes para el package.
 doc/graph.html
 doc/graph.json
+doc/viewer.png
+doc/api/
