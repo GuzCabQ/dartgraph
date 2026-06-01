@@ -9,3 +9,4 @@ pubspec.lock
 # Artefactos internos del flujo de trabajo (superpowers: plans, specs, research).
 # En docs/ sí se versionan ADRs, diagramas y documentación pública del paquete.
 docs/superpowers/
+build/

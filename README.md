@@ -1,39 +1,92 @@
-<!--
-This README describes the package. If you publish this package to pub.dev,
-this README's contents appear on the landing page for your package.
+# dart_source_graph
 
-For information about how to write a good package README, see the guide for
-[writing package pages](https://dart.dev/tools/pub/writing-package-pages).
+Produce un grafo semántico del código fuente Dart/Flutter para que una IA entienda la estructura del proyecto sin leer cada archivo.
 
-For general information about developing packages, see the Dart guide for
-[creating packages](https://dart.dev/tools/pub/create-packages)
-and the Flutter guide for
-[developing packages and plugins](https://flutter.dev/to/develop-packages).
--->
+## Principio rector
 
-TODO: Put a short description of the package here that helps potential users
-know whether this package might be useful for them.
+**Mejor no tener un dato que tenerlo mal.** Cada arista del grafo lleva un nivel de confianza (`extracted` > `inferred` > `ambiguous`). El paquete solo emite lo que puede fundamentar.
 
-## Features
+## Instalación
 
-TODO: List what your package can do. Maybe include images, gifs, or videos.
-
-## Getting started
-
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
-
-## Usage
-
-TODO: Include short and useful examples for package users. Add longer examples
-to `/example` folder.
-
-```dart
-const like = 'sample';
+```shell
+dart pub add dart_source_graph
 ```
 
-## Additional information
+## Uso como librería
 
-TODO: Tell users more about the package: where to find more information, how to
-contribute to the package, how to file issues, what response they can expect
-from the package authors, and more.
+```dart
+import 'package:dart_source_graph/dart_source_graph.dart';
+
+// Uso mínimo — sin config, cero dependencias externas
+final graph = await SourceGraphAnalyzer().analyze('.');
+
+// Con config: capas arquitectónicas + resolución de tipos
+final graph = await SourceGraphAnalyzer(
+  config: SourceGraphConfig(
+    layers: [LayerConfig(name: 'core', paths: ['lib/src/core/'])],
+  ),
+).analyze('.', resolve: true);
+```
+
+## Uso CLI
+
+```shell
+dart pub global activate dart_source_graph
+
+# Construir grafo
+dart_source_graph build --project-root . --output graph.json
+
+# Consultas
+dart_source_graph query impact SourceGraphAnalyzer -i graph.json
+dart_source_graph query god-nodes --limit 10 -i graph.json
+```
+
+## SourceGraphConfig
+
+| Campo           | Tipo                  | Default                                | Descripción                                        |
+| --------------- | --------------------- | -------------------------------------- | -------------------------------------------------- |
+| `exclude`       | `List<String>`        | `['**/*.g.dart', '**/*.freezed.dart']` | Globs de archivos a excluir                        |
+| `layers`        | `List<LayerConfig>`   | `[]`                                   | Clasificación de archivos por capa arquitectónica  |
+| `roleOverrides` | `Map<String, String>` | `{}`                                   | Sobreescribe roles semánticos built-in             |
+| `wiring`        | `WiringConfig?`       | `null`                                 | Detecta registros DI/rutas en archivos manifest    |
+
+## Roles detectados automáticamente
+
+| Supertipo                                                        | Rol                              |
+| ---------------------------------------------------------------- | -------------------------------- |
+| `Notifier`, `AsyncNotifier`, `StreamNotifier`                    | `riverpod.notifier`              |
+| `ConsumerWidget`, `ConsumerStatefulWidget`, `HookConsumerWidget` | `riverpod.consumer_widget`       |
+| `Bloc`                                                           | `bloc.bloc`                      |
+| `Cubit`                                                          | `bloc.cubit`                     |
+| `ChangeNotifier`                                                 | `flutter.change_notifier`        |
+| `StatelessWidget`, `StatefulWidget`                              | `flutter.widget`                 |
+| `State`                                                          | `flutter.state`                  |
+| `GetxController`                                                 | `getx.controller`                |
+| `GetxService`                                                    | `getx.service`                   |
+| `GetView`, `GetWidget`                                           | `getx.view`                      |
+| ...                                                              | (extensible vía `roleOverrides`) |
+
+## Formato graph.json
+
+```json
+{
+  "schema_version": "1.0.0",
+  "package": "my_app",
+  "generated_at": "2026-05-31T12:00:00.000Z",
+  "inputs_fingerprint": "sha256:abc123...",
+  "root": "/path/to/project",
+  "resolved": true,
+  "summary": { "nodes": 142, "edges": 387, "skipped_files": 0 },
+  "nodes": [
+    { "id": "class:lib/src/core/builder.dart#CodeGraphBuilder",
+      "label": "CodeGraphBuilder", "kind": "class",
+      "file": "lib/src/core/builder.dart", "line": 54,
+      "layer": "core", "role": null }
+  ],
+  "edges": [
+    { "source": "file:lib/src/core/builder.dart",
+      "target": "file:lib/src/contracts/code_graph.dart",
+      "relation": "imports", "confidence": "extracted", "line": 20 }
+  ]
+}
+```
