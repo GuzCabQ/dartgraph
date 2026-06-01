@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:args/command_runner.dart';
 import 'package:dart_source_graph/src/cli/build_command.dart';
 import 'package:dart_source_graph/src/cli/query_command.dart';
+import 'package:dart_source_graph/src/cli/view_command.dart';
 
 Future<void> main(List<String> args) async {
   final runner =
@@ -16,7 +17,8 @@ Future<void> main(List<String> args) async {
           'Genera y consulta el grafo de código fuente de un proyecto Dart/Flutter.',
         )
         ..addCommand(BuildCommand())
-        ..addCommand(QueryCommand());
+        ..addCommand(QueryCommand())
+        ..addCommand(ViewCommand());
 
   try {
     final code = await runner.run(args) ?? 0;

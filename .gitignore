@@ -10,3 +10,10 @@ pubspec.lock
 # En docs/ sí se versionan ADRs, diagramas y documentación pública del paquete.
 docs/superpowers/
 build/
+
+# Template HTML generado — regenerar con: dart tool/embed_template.dart
+lib/src/viewer/_template.dart
+
+# macOS
+.DS_Store
+**/.DS_Store

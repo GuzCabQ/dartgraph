@@ -36,9 +36,45 @@ dart pub global activate dart_source_graph
 # Construir grafo
 dart_source_graph build --project-root . --output graph.json
 
+# Construir grafo + visor HTML de una sola vez
+dart_source_graph build --project-root . --output graph.json --html
+
 # Consultas
 dart_source_graph query impact SourceGraphAnalyzer -i graph.json
 dart_source_graph query god-nodes --limit 10 -i graph.json
+
+# Regenerar el visor HTML sin re-analizar el proyecto
+dart_source_graph view --graph graph.json
+dart_source_graph view --graph graph.json --output docs/graph.html
+```
+
+## Visor HTML
+
+`dart_source_graph` puede generar un visor HTML interactivo (`graph.html`) autocontenido — no requiere servidor, funciona desde `file://`.
+
+**Desde el CLI:**
+
+```shell
+dart_source_graph build --output graph.json --html
+# → graph.json  +  graph.html en el mismo directorio
+```
+
+**Desde la API (para integraciones como alea-flow):**
+
+```dart
+import 'package:dart_source_graph/dart_source_graph.dart';
+import 'package:dart_source_graph/viewer.dart';
+
+final graph = await SourceGraphAnalyzer().analyze('.');
+final meta = CodeGraphMeta(
+  schemaVersion: '1.0.0',
+  package: 'my_app',
+  generatedAt: DateTime.now().toUtc().toIso8601String(),
+  inputsFingerprint: CodeGraphBuilder.inputsFingerprint('.', []),
+  root: '.',
+);
+writeHtmlViewer(graph: graph, meta: meta, outputDir: './graph');
+// → ./graph/graph.html
 ```
 
 ## SourceGraphConfig

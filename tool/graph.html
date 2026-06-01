@@ -1,0 +1,1649 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  HOW TO USE  —  dart_source_graph HTML viewer (graph.html)
+  ============================================================================
+  This is a self-contained template for visualizing a `graph.json` knowledge
+  graph produced by the `dart_source_graph` Dart CLI.
+
+  (1) THE PLACEHOLDER
+      The string  /* GRAPH_JSON_PLACEHOLDER */  appears EXACTLY ONCE in this
+      file, inside the <script id="graph-payload" type="application/json">
+      tag near the bottom of <body>. At generation time the Dart CLI must
+      replace that exact comment with the full graph.json payload (a raw JSON
+      object — NOT wrapped in quotes), e.g.:
+
+          html = template.replace('/* GRAPH_JSON_PLACEHOLDER */', jsonString);
+
+      Embedding the JSON inside a <script type="application/json"> tag means
+      no JS-string escaping is required and the viewer never calls fetch().
+      Until the placeholder is replaced, the viewer falls back to a small
+      built-in sample graph so the template is previewable on its own.
+
+  (2) REQUIRED CDN SCRIPTS
+      Only one external asset is used: D3.js v7
+          https://d3js.org/d3.v7.min.js
+      Everything else (CSS, JS, fonts via system stack) is inline. Works from
+      file:// with no server and no build step.
+
+  (3) MINIMUM SCHEMA VERSION
+      Expects graph.json  schema_version: "1.0.0".
+  ============================================================================
+-->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>dart_source_graph · viewer</title>
+<style>
+  /* ---- Theme tokens ---- */
+  :root[data-theme="dark"] {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface-2: #18233b;
+    --surface-3: #243049;
+    --border: #334155;
+    --border-soft: #2a3a52;
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-faint: #64748b;
+    --accent: #38bdf8;
+    --accent-dim: #0e7490;
+    --shadow: rgba(0,0,0,0.45);
+    --canvas-bg: #0b1220;
+    --grid: #16233c;
+  }
+  :root[data-theme="light"] {
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --surface-2: #f1f5f9;
+    --surface-3: #e2e8f0;
+    --border: #cbd5e1;
+    --border-soft: #e2e8f0;
+    --text: #0f172a;
+    --text-muted: #475569;
+    --text-faint: #94a3b8;
+    --accent: #0284c7;
+    --accent-dim: #7dd3fc;
+    --shadow: rgba(15,23,42,0.12);
+    --canvas-bg: #ffffff;
+    --grid: #eef2f7;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.45;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'Fira Code', ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+
+  /* ---- App shell ---- */
+  #app {
+    display: grid;
+    grid-template-columns: var(--sidebar-w, 340px) 1fr;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ---- Sidebar ---- */
+  #sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 260px;
+  }
+  #sidebar-scroll { overflow-y: auto; overflow-x: hidden; flex: 1; }
+  #sidebar-scroll::-webkit-scrollbar { width: 10px; }
+  #sidebar-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid var(--surface); }
+
+  .resizer {
+    position: absolute; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 50;
+  }
+  #sidebar-resizer { left: calc(var(--sidebar-w, 340px) - 3px); }
+  #sidebar-resizer:hover { background: var(--accent-dim); }
+
+  /* ---- Header / stats ---- */
+  .panel-head {
+    padding: 16px 16px 14px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  }
+  .pkg-row { display: flex; align-items: baseline; gap: 8px; }
+  .pkg-name { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+  .pkg-badge {
+    font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+    padding: 2px 6px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .gen-date { color: var(--text-faint); font-size: 11px; margin-top: 3px; }
+  .chips { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 13px; }
+  .chip {
+    background: var(--surface-3); border: 1px solid var(--border-soft); border-radius: 7px;
+    padding: 7px 10px; display: flex; flex-direction: column; gap: 1px;
+  }
+  .chip .val { font-size: 17px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .chip .lbl { font-size: 9.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .chip.n-nodes .val { color: var(--accent); }
+  .chip.n-edges .val { color: #a78bfa; }
+  .chip.n-files .val { color: #3b82f6; }
+  .chip.n-ext   .val { color: #94a3b8; }
+
+  /* ---- Collapsible sections ---- */
+  .section { border-bottom: 1px solid var(--border); }
+  .section-head {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 11px 16px; background: none; border: 0; cursor: pointer;
+    color: var(--text); font: inherit; font-weight: 600; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.05em; text-align: left;
+  }
+  .section-head:hover { background: var(--surface-2); }
+  .section-head .caret { transition: transform .15s ease; color: var(--text-faint); font-size: 10px; }
+  .section.collapsed .caret { transform: rotate(-90deg); }
+  .section.collapsed .section-body { display: none; }
+  .section-head .count-tag { margin-left: auto; color: var(--text-faint); font-weight: 500; font-size: 11px; text-transform: none; letter-spacing: 0; }
+  .section-body { padding: 4px 16px 16px; }
+
+  /* ---- Search ---- */
+  .search-wrap { position: relative; }
+  .search-wrap svg.ico { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-faint); pointer-events: none; }
+  #search-input {
+    width: 100%; padding: 9px 30px 9px 32px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font: inherit; outline: none;
+  }
+  #search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  #search-clear {
+    position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+    background: var(--surface-3); border: 0; color: var(--text-muted); cursor: pointer;
+    width: 18px; height: 18px; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 12px; line-height: 1;
+  }
+  #search-input:not(:placeholder-shown) + #search-clear { display: flex; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  #search-results { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .result-chip {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+    padding: 4px 9px; border-radius: 20px; background: var(--surface-3);
+    border: 1px solid var(--border-soft); color: var(--text); cursor: pointer; font-size: 11.5px;
+  }
+  .result-chip:hover { border-color: var(--accent); background: var(--surface-2); }
+  .result-chip .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .result-chip .rc-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-empty { color: var(--text-faint); font-size: 11.5px; margin-top: 8px; font-style: italic; }
+
+  /* ---- Filters ---- */
+  .filter-group { margin-bottom: 14px; }
+  .filter-group:last-child { margin-bottom: 0; }
+  .filter-group > .fg-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); margin: 0 0 7px;
+  }
+  .fg-head button {
+    background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit;
+    font-size: 10px; text-transform: none; letter-spacing: 0; padding: 0;
+  }
+  .fg-head button:hover { text-decoration: underline; }
+  .check {
+    display: flex; align-items: center; gap: 9px; padding: 5px 7px; border-radius: 6px;
+    cursor: pointer; user-select: none;
+  }
+  .check:hover { background: var(--surface-2); }
+  .check input { display: none; }
+  .check .box {
+    width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--border);
+    flex: none; display: grid; place-items: center; background: var(--bg); transition: all .12s;
+  }
+  .check input:checked + .box { background: var(--accent); border-color: var(--accent); }
+  .check input:checked + .box::after { content: ""; width: 8px; height: 8px; border-radius: 1px; background: var(--bg); clip-path: polygon(14% 44%, 0 65%, 43% 100%, 100% 16%, 80% 0, 39% 67%); background: var(--bg); }
+  .check .swatch { width: 13px; height: 13px; border-radius: 3px; flex: none; }
+  .check .glyph { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
+  .check .ck-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .check .ck-count { color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: 11px; }
+  .check.off .ck-label, .check.off .ck-count { opacity: 0.5; }
+  .line-sample { width: 26px; height: 0; flex: none; }
+
+  /* ---- Legend ---- */
+  .legend-block { margin-bottom: 14px; }
+  .legend-block h4 { margin: 0 0 7px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+  .legend-row { display: flex; align-items: center; gap: 9px; padding: 3px 0; font-size: 11.5px; color: var(--text-muted); }
+  .legend-row .ck-label { color: var(--text); }
+  .legend-swatch { width: 14px; height: 14px; flex: none; display: grid; place-items: center; }
+
+  /* ---- Main / canvas ---- */
+  #main { position: relative; overflow: hidden; background: var(--canvas-bg); }
+  #viz { position: absolute; inset: 0; }
+  #viz svg, #viz canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #viz svg { background:
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 28px 28px,
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 28px 28px;
+  }
+
+  .node-label { font-size: 10px; fill: var(--text); paint-order: stroke; pointer-events: none; }
+  .node-label.lbl-stroke { stroke: var(--canvas-bg); stroke-width: 3px; stroke-linejoin: round; }
+  .node.faded { opacity: 0.12; }
+  .link.faded { opacity: 0.04 !important; }
+  .node-hit { cursor: pointer; }
+  .node.pinned .pin-dot { display: block; }
+
+  /* ---- Toolbar ---- */
+  #toolbar {
+    position: absolute; top: 12px; right: 12px; z-index: 20;
+    display: flex; gap: 6px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 5px; box-shadow: 0 6px 20px var(--shadow);
+  }
+  #toolbar .tdiv { width: 1px; background: var(--border); margin: 3px 2px; }
+  .tbtn {
+    width: 30px; height: 30px; border-radius: 7px; border: 0; background: none; cursor: pointer;
+    color: var(--text-muted); display: grid; place-items: center;
+  }
+  .tbtn:hover { background: var(--surface-3); color: var(--text); }
+  .tbtn.wide { width: auto; padding: 0 11px; gap: 6px; font: inherit; font-size: 11.5px; font-weight: 500; }
+
+  /* ---- Zoom badge ---- */
+  #zoom-badge {
+    position: absolute; left: 12px; bottom: 12px; z-index: 15;
+    background: color-mix(in srgb, var(--surface) 85%, transparent); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 10px; font-size: 11px; color: var(--text-muted);
+    backdrop-filter: blur(6px); display: flex; gap: 10px; align-items: center;
+  }
+  #zoom-badge .render-mode { color: var(--accent); font-weight: 600; }
+  #context-banner {
+    position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 18;
+    background: var(--surface); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 7px 12px; display: none; align-items: center; gap: 10px; box-shadow: 0 6px 20px var(--shadow);
+    font-size: 12px;
+  }
+  #context-banner.show { display: flex; }
+  #context-banner button { background: var(--accent); color: var(--bg); border: 0; border-radius: 5px; padding: 4px 9px; cursor: pointer; font: inherit; font-weight: 600; font-size: 11px; }
+
+  /* ---- Tooltip ---- */
+  #tooltip {
+    position: fixed; z-index: 100; pointer-events: none; max-width: 320px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; box-shadow: 0 8px 28px var(--shadow); display: none; font-size: 11.5px;
+  }
+  #tooltip .tt-title { font-weight: 700; margin-bottom: 3px; display: flex; align-items: center; gap: 6px; }
+  #tooltip .tt-row { color: var(--text-muted); display: flex; gap: 6px; }
+  #tooltip .tt-row b { color: var(--text); font-weight: 500; }
+  .kind-pill { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 4px; color: #fff; }
+
+  /* ---- Context menu ---- */
+  #ctx-menu {
+    position: fixed; z-index: 120; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 9px; padding: 5px; min-width: 220px; box-shadow: 0 10px 34px var(--shadow); display: none;
+  }
+  #ctx-menu button {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    background: none; border: 0; color: var(--text); cursor: pointer; font: inherit; font-size: 12px;
+    padding: 8px 10px; border-radius: 6px;
+  }
+  #ctx-menu button:hover { background: var(--surface-3); }
+  #ctx-menu button:disabled { color: var(--text-faint); cursor: default; }
+  #ctx-menu button:disabled:hover { background: none; }
+  #ctx-menu .ctx-sub { font-size: 10px; color: var(--text-faint); padding: 4px 10px 2px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #ctx-menu .ico { color: var(--text-faint); }
+
+  /* ---- Detail drawer ---- */
+  #drawer {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 246px; z-index: 30;
+    background: var(--surface); border-top: 1px solid var(--border);
+    box-shadow: 0 -8px 30px var(--shadow);
+    display: none; grid-template-columns: 300px 1fr;
+  }
+  #drawer.open { display: grid; }
+  #drawer .dr-close {
+    position: absolute; top: 10px; right: 12px; background: var(--surface-3); border: 0; color: var(--text-muted);
+    width: 26px; height: 26px; border-radius: 6px; cursor: pointer; display: grid; place-items: center; z-index: 2;
+  }
+  #drawer .dr-close:hover { color: var(--text); }
+  .dr-left { padding: 18px 18px 16px; border-right: 1px solid var(--border); overflow-y: auto; }
+  .dr-left h2 { margin: 0 0 9px; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; word-break: break-word; padding-right: 28px; }
+  .dr-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .badge {
+    font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 5px;
+    border: 1px solid var(--border); color: var(--text-muted); background: var(--surface-3);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 2px; }
+  .dr-meta { font-size: 12px; color: var(--text-muted); }
+  .dr-meta .mrow { display: flex; gap: 8px; padding: 3px 0; align-items: baseline; }
+  .dr-meta .mk { color: var(--text-faint); min-width: 38px; }
+  .dr-meta .mv { color: var(--text); word-break: break-all; }
+  .dr-right { padding: 16px 18px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .edge-col h3 { margin: 0 0 9px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); display: flex; align-items: center; gap: 7px; }
+  .edge-col h3 .cnt { background: var(--surface-3); color: var(--text-muted); border-radius: 10px; padding: 1px 7px; font-size: 10px; }
+  .rel-group { margin-bottom: 11px; }
+  .rel-group .rel-name { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .edge-item {
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px;
+    cursor: pointer; font-size: 12px; color: var(--text);
+  }
+  .edge-item:hover { background: var(--surface-3); }
+  .edge-item .ei-shape { flex: none; }
+  .edge-item .ei-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .edge-item .ei-conf { margin-left: auto; font-size: 9px; color: var(--text-faint); text-transform: uppercase; }
+  .show-all-btn { background: var(--surface-3); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 11px; margin-top: 4px; }
+  .show-all-btn:hover { border-color: var(--accent); }
+  .empty-edges { color: var(--text-faint); font-style: italic; font-size: 11.5px; }
+
+  /* ---- Loading veil ---- */
+  #veil { position: absolute; inset: 0; z-index: 200; display: grid; place-items: center; background: var(--canvas-bg); color: var(--text-muted); font-size: 13px; }
+  #veil.hide { display: none; }
+  .spinner { width: 26px; height: 26px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside id="sidebar">
+    <div class="panel-head">
+      <div class="pkg-row">
+        <span class="pkg-name" id="pkg-name">package</span>
+        <span class="pkg-badge" id="schema-badge">v1.0.0</span>
+      </div>
+      <div class="gen-date" id="gen-date">—</div>
+      <div class="chips">
+        <div class="chip n-nodes"><span class="val" id="stat-nodes">0</span><span class="lbl">Nodes</span></div>
+        <div class="chip n-edges"><span class="val" id="stat-edges">0</span><span class="lbl">Edges</span></div>
+        <div class="chip n-files"><span class="val" id="stat-files">0</span><span class="lbl">Internal files</span></div>
+        <div class="chip n-ext"><span class="val" id="stat-ext">0</span><span class="lbl">External deps</span></div>
+      </div>
+    </div>
+
+    <div id="sidebar-scroll">
+      <!-- Search -->
+      <div class="section" data-section="search">
+        <button class="section-head" data-toggle><span class="caret">▼</span> Search <span class="count-tag" id="search-count"></span></button>
+        <div class="section-body">
+          <div class="search-wrap">
+            <svg class="ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <label for="search-input" class="visually-hidden">Search nodes by label or file path</label>
+            <input id="search-input" type="text" placeholder="Search label or file…" autocomplete="off" spellcheck="false" />
+            <button id="search-clear" aria-label="Clear search">✕</button>
+          </div>
+          <div id="search-results"></div>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="section" data-section="filters">
+        <button class="section-head" data-toggle><span class="caret">▼</span> Filters</button>
+        <div class="section-body">
+          <div class="filter-group" id="fg-kinds">
+            <div class="fg-head"><span>Node kinds</span><button data-all="kinds">all / none</button></div>
+          </div>
+          <div class="filter-group" id="fg-relations">
+            <div class="fg-head"><span>Edge relations</span><button data-all="relations">all / none</button></div>
+          </div>
+          <div class="filter-group" id="fg-confidence">
+            <div class="fg-head"><span>Confidence</span><button data-all="confidence">all / none</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="section" data-section="legend">
+        <button class="section-head" data-toggle><span class="caret">▼</span> Legend</button>
+        <div class="section-body" id="legend-body"></div>
+      </div>
+    </div>
+    <div class="resizer" id="sidebar-resizer"></div>
+  </aside>
+
+  <!-- ===================== MAIN ===================== -->
+  <main id="main">
+    <div id="viz"></div>
+
+    <div id="toolbar">
+      <button class="tbtn" id="tb-zoom-in" title="Zoom in" aria-label="Zoom in"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button class="tbtn" id="tb-zoom-out" title="Zoom out" aria-label="Zoom out"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg></button>
+      <button class="tbtn" id="tb-fit" title="Fit to screen" aria-label="Fit to screen"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/></svg></button>
+      <div class="tdiv"></div>
+      <button class="tbtn wide" id="tb-reset" title="Reset filters"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg> Reset</button>
+      <button class="tbtn" id="tb-theme" title="Toggle theme" aria-label="Toggle theme"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button class="tbtn" id="tb-export" title="Export SVG" aria-label="Export SVG"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>
+    </div>
+
+    <div id="context-banner">
+      <span id="context-banner-text"></span>
+      <button id="context-banner-clear">Clear</button>
+    </div>
+
+    <div id="zoom-badge">
+      <span>zoom <b id="zoom-pct">100%</b></span>
+      <span>·</span>
+      <span><b id="visible-count">0</b> shown</span>
+      <span>·</span>
+      <span class="render-mode" id="render-mode">SVG</span>
+    </div>
+
+    <!-- Detail drawer -->
+    <section id="drawer" aria-hidden="true">
+      <button class="dr-close" id="dr-close" aria-label="Close detail panel">✕</button>
+      <div class="dr-left" id="dr-left"></div>
+      <div class="dr-right" id="dr-right"></div>
+    </section>
+
+    <div id="veil"><div><div class="spinner"></div>Building layout…</div></div>
+  </main>
+</div>
+
+<div id="tooltip"></div>
+<div id="ctx-menu"></div>
+
+<!-- ===================== GRAPH DATA ===================== -->
+<!-- The Dart CLI replaces the placeholder comment below with the raw graph.json object. -->
+<script id="graph-payload" type="application/json">
+/* GRAPH_JSON_PLACEHOLDER */
+</script>
+
+<!-- Built-in fallback sample so the template previews on its own (ignored once the placeholder is replaced). -->
+<script id="sample-data">
+window.__SAMPLE_GRAPH__ = {
+  "schema_version": "1.0.0",
+  "package": "habitat_app",
+  "generated_at": "2026-05-29T08:14:53.118Z",
+  "inputs_fingerprint": "sha256:bd9ae7c41f0a",
+  "root": ".",
+  "resolved": true,
+  "summary": {
+    "nodes": 0, "edges": 0, "skipped_files": 0, "resolved_files": 12, "unresolved_files": 0,
+    "by_kind": {}, "by_relation": {}
+  },
+  "nodes": [
+    // ---- files ----
+    { "id": "file:lib/main.dart", "label": "main.dart", "kind": "file", "file": "lib/main.dart", "layer": "presentation" },
+    { "id": "file:lib/src/app.dart", "label": "app.dart", "kind": "file", "file": "lib/src/app.dart", "layer": "presentation" },
+    { "id": "file:lib/src/features/auth/login_page.dart", "label": "login_page.dart", "kind": "file", "file": "lib/src/features/auth/login_page.dart", "layer": "presentation" },
+    { "id": "file:lib/src/features/auth/auth_controller.dart", "label": "auth_controller.dart", "kind": "file", "file": "lib/src/features/auth/auth_controller.dart", "layer": "domain" },
+    { "id": "file:lib/src/features/auth/auth_repository.dart", "label": "auth_repository.dart", "kind": "file", "file": "lib/src/features/auth/auth_repository.dart", "layer": "data" },
+    { "id": "file:lib/src/features/feed/feed_page.dart", "label": "feed_page.dart", "kind": "file", "file": "lib/src/features/feed/feed_page.dart", "layer": "presentation" },
+    { "id": "file:lib/src/features/feed/feed_notifier.dart", "label": "feed_notifier.dart", "kind": "file", "file": "lib/src/features/feed/feed_notifier.dart", "layer": "domain" },
+    { "id": "file:lib/src/models/user.dart", "label": "user.dart", "kind": "file", "file": "lib/src/models/user.dart", "layer": "domain" },
+    { "id": "file:lib/src/models/post.dart", "label": "post.dart", "kind": "file", "file": "lib/src/models/post.dart", "layer": "domain" },
+    { "id": "file:lib/src/services/api_client.dart", "label": "api_client.dart", "kind": "file", "file": "lib/src/services/api_client.dart", "layer": "data" },
+    { "id": "file:lib/src/services/storage.dart", "label": "storage.dart", "kind": "file", "file": "lib/src/services/storage.dart", "layer": "data" },
+    { "id": "file:lib/src/widgets/loading_spinner.dart", "label": "loading_spinner.dart", "kind": "file", "file": "lib/src/widgets/loading_spinner.dart", "layer": "presentation" },
+
+    // ---- classes ----
+    { "id": "class:lib/src/app.dart#HabitatApp", "label": "HabitatApp", "kind": "class", "file": "lib/src/app.dart", "line": 12, "layer": "presentation", "role": "flutter.widget" },
+    { "id": "class:lib/src/features/auth/login_page.dart#LoginPage", "label": "LoginPage", "kind": "class", "file": "lib/src/features/auth/login_page.dart", "line": 18, "layer": "presentation", "role": "flutter.widget" },
+    { "id": "class:lib/src/features/auth/login_page.dart#_LoginPageState", "label": "_LoginPageState", "kind": "class", "file": "lib/src/features/auth/login_page.dart", "line": 31, "layer": "presentation", "role": "flutter.state" },
+    { "id": "class:lib/src/features/auth/auth_controller.dart#AuthController", "label": "AuthController", "kind": "class", "file": "lib/src/features/auth/auth_controller.dart", "line": 22, "layer": "domain", "role": "riverpod.notifier" },
+    { "id": "class:lib/src/features/auth/auth_repository.dart#AuthRepository", "label": "AuthRepository", "kind": "class", "file": "lib/src/features/auth/auth_repository.dart", "line": 9, "layer": "data" },
+    { "id": "class:lib/src/features/feed/feed_page.dart#FeedPage", "label": "FeedPage", "kind": "class", "file": "lib/src/features/feed/feed_page.dart", "line": 16, "layer": "presentation", "role": "riverpod.consumer_widget" },
+    { "id": "class:lib/src/features/feed/feed_page.dart#PostCard", "label": "PostCard", "kind": "class", "file": "lib/src/features/feed/feed_page.dart", "line": 88, "layer": "presentation", "role": "flutter.widget" },
+    { "id": "class:lib/src/features/feed/feed_notifier.dart#FeedNotifier", "label": "FeedNotifier", "kind": "class", "file": "lib/src/features/feed/feed_notifier.dart", "line": 19, "layer": "domain", "role": "riverpod.notifier" },
+    { "id": "class:lib/src/models/user.dart#User", "label": "User", "kind": "class", "file": "lib/src/models/user.dart", "line": 5, "layer": "domain" },
+    { "id": "class:lib/src/models/post.dart#Post", "label": "Post", "kind": "class", "file": "lib/src/models/post.dart", "line": 5, "layer": "domain" },
+    { "id": "class:lib/src/services/api_client.dart#ApiClient", "label": "ApiClient", "kind": "class", "file": "lib/src/services/api_client.dart", "line": 14, "layer": "data" },
+    { "id": "class:lib/src/services/storage.dart#Storage", "label": "Storage", "kind": "class", "file": "lib/src/services/storage.dart", "line": 7, "layer": "data", "role": "flutter.change_notifier" },
+    { "id": "class:lib/src/widgets/loading_spinner.dart#LoadingSpinner", "label": "LoadingSpinner", "kind": "class", "file": "lib/src/widgets/loading_spinner.dart", "line": 6, "layer": "presentation", "role": "flutter.widget" },
+
+    // ---- mixins ----
+    { "id": "mixin:lib/src/features/auth/auth_controller.dart#ValidationMixin", "label": "ValidationMixin", "kind": "mixin", "file": "lib/src/features/auth/auth_controller.dart", "line": 70, "layer": "domain" },
+    { "id": "mixin:lib/src/services/api_client.dart#RetryMixin", "label": "RetryMixin", "kind": "mixin", "file": "lib/src/services/api_client.dart", "line": 92, "layer": "data" },
+
+    // ---- enums ----
+    { "id": "enum:lib/src/models/user.dart#UserRole", "label": "UserRole", "kind": "enum", "file": "lib/src/models/user.dart", "line": 40, "layer": "domain" },
+    { "id": "enum:lib/src/features/feed/feed_notifier.dart#FeedStatus", "label": "FeedStatus", "kind": "enum", "file": "lib/src/features/feed/feed_notifier.dart", "line": 8, "layer": "domain" },
+    { "id": "enum:lib/src/features/auth/auth_controller.dart#AuthStatus", "label": "AuthStatus", "kind": "enum", "file": "lib/src/features/auth/auth_controller.dart", "line": 10, "layer": "domain" },
+
+    // ---- methods ----
+    { "id": "method:lib/src/features/auth/auth_controller.dart#AuthController.login", "label": "login", "kind": "method", "file": "lib/src/features/auth/auth_controller.dart", "line": 30, "layer": "domain" },
+    { "id": "method:lib/src/features/auth/auth_controller.dart#AuthController.logout", "label": "logout", "kind": "method", "file": "lib/src/features/auth/auth_controller.dart", "line": 48, "layer": "domain" },
+    { "id": "method:lib/src/features/feed/feed_notifier.dart#FeedNotifier.loadMore", "label": "loadMore", "kind": "method", "file": "lib/src/features/feed/feed_notifier.dart", "line": 34, "layer": "domain" },
+    { "id": "method:lib/src/services/api_client.dart#ApiClient.get", "label": "get", "kind": "method", "file": "lib/src/services/api_client.dart", "line": 28, "layer": "data" },
+    { "id": "method:lib/src/services/api_client.dart#ApiClient.post", "label": "post", "kind": "method", "file": "lib/src/services/api_client.dart", "line": 52, "layer": "data" },
+    { "id": "method:lib/src/features/auth/auth_repository.dart#AuthRepository.signIn", "label": "signIn", "kind": "method", "file": "lib/src/features/auth/auth_repository.dart", "line": 15, "layer": "data" },
+    { "id": "method:lib/src/models/user.dart#User.fromJson", "label": "fromJson", "kind": "method", "file": "lib/src/models/user.dart", "line": 22, "layer": "domain" },
+    { "id": "method:lib/src/features/auth/login_page.dart#_LoginPageState.build", "label": "build", "kind": "method", "file": "lib/src/features/auth/login_page.dart", "line": 38, "layer": "presentation" },
+
+    // ---- functions ----
+    { "id": "function:lib/main.dart#main", "label": "main", "kind": "function", "file": "lib/main.dart", "line": 6 },
+    { "id": "function:lib/src/features/auth/auth_controller.dart#authControllerProvider", "label": "authControllerProvider", "kind": "function", "file": "lib/src/features/auth/auth_controller.dart", "line": 18, "layer": "domain", "role": "riverpod.provider" },
+    { "id": "function:lib/src/features/feed/feed_notifier.dart#feedNotifierProvider", "label": "feedNotifierProvider", "kind": "function", "file": "lib/src/features/feed/feed_notifier.dart", "line": 15, "layer": "domain", "role": "riverpod.provider" },
+    { "id": "function:lib/src/app.dart#buildTheme", "label": "buildTheme", "kind": "function", "file": "lib/src/app.dart", "line": 60, "layer": "presentation" },
+
+    // ---- external ----
+    { "id": "external:dart:io", "label": "dart:io", "kind": "external" },
+    { "id": "external:dart:async", "label": "dart:async", "kind": "external" },
+    { "id": "external:dart:convert", "label": "dart:convert", "kind": "external" },
+    { "id": "external:package:flutter/material.dart", "label": "flutter/material.dart", "kind": "external" },
+    { "id": "external:package:flutter_riverpod/flutter_riverpod.dart", "label": "flutter_riverpod.dart", "kind": "external" },
+    { "id": "external:package:http/http.dart", "label": "http/http.dart", "kind": "external" },
+    { "id": "external:StatelessWidget", "label": "StatelessWidget", "kind": "external" },
+    { "id": "external:StatefulWidget", "label": "StatefulWidget", "kind": "external" },
+    { "id": "external:State", "label": "State", "kind": "external" },
+    { "id": "external:ConsumerWidget", "label": "ConsumerWidget", "kind": "external" },
+    { "id": "external:Notifier", "label": "Notifier", "kind": "external" },
+    { "id": "external:ChangeNotifier", "label": "ChangeNotifier", "kind": "external" },
+    { "id": "external:ValidationMixin", "label": "ValidationMixin", "kind": "external" },
+    { "id": "external:RetryMixin", "label": "RetryMixin", "kind": "external" },
+    { "id": "external:User", "label": "User", "kind": "external" },
+    { "id": "external:Post", "label": "Post", "kind": "external" },
+    { "id": "external:signIn", "label": "signIn", "kind": "external" },
+    { "id": "external:post", "label": "post()", "kind": "external" },
+    { "id": "external:get", "label": "get()", "kind": "external" },
+    { "id": "external:jsonDecode", "label": "jsonDecode", "kind": "external" },
+    { "id": "external:jsonEncode", "label": "jsonEncode", "kind": "external" },
+    { "id": "external:UserRole", "label": "UserRole", "kind": "external" },
+    { "id": "external:runApp", "label": "runApp", "kind": "external" }
+  ],
+  "edges": [
+    // imports
+    { "source": "file:lib/main.dart", "target": "file:lib/src/app.dart", "relation": "imports", "confidence": "extracted", "line": 2 },
+    { "source": "file:lib/main.dart", "target": "external:package:flutter/material.dart", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/main.dart", "target": "external:package:flutter_riverpod/flutter_riverpod.dart", "relation": "imports", "confidence": "extracted", "line": 3 },
+    { "source": "file:lib/src/app.dart", "target": "file:lib/src/features/auth/login_page.dart", "relation": "imports", "confidence": "extracted", "line": 4 },
+    { "source": "file:lib/src/app.dart", "target": "file:lib/src/features/feed/feed_page.dart", "relation": "imports", "confidence": "extracted", "line": 5 },
+    { "source": "file:lib/src/app.dart", "target": "external:package:flutter/material.dart", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/src/features/auth/login_page.dart", "target": "file:lib/src/features/auth/auth_controller.dart", "relation": "imports", "confidence": "extracted", "line": 3 },
+    { "source": "file:lib/src/features/auth/login_page.dart", "target": "file:lib/src/widgets/loading_spinner.dart", "relation": "imports", "confidence": "extracted", "line": 4 },
+    { "source": "file:lib/src/features/auth/login_page.dart", "target": "external:package:flutter/material.dart", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "file:lib/src/features/auth/auth_repository.dart", "relation": "imports", "confidence": "extracted", "line": 3 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "file:lib/src/models/user.dart", "relation": "imports", "confidence": "extracted", "line": 4 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "external:package:flutter_riverpod/flutter_riverpod.dart", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/src/features/auth/auth_repository.dart", "target": "file:lib/src/services/api_client.dart", "relation": "imports", "confidence": "extracted", "line": 2 },
+    { "source": "file:lib/src/features/auth/auth_repository.dart", "target": "file:lib/src/services/storage.dart", "relation": "imports", "confidence": "extracted", "line": 3 },
+    { "source": "file:lib/src/features/auth/auth_repository.dart", "target": "file:lib/src/models/user.dart", "relation": "imports", "confidence": "extracted", "line": 4 },
+    { "source": "file:lib/src/features/feed/feed_page.dart", "target": "file:lib/src/features/feed/feed_notifier.dart", "relation": "imports", "confidence": "extracted", "line": 3 },
+    { "source": "file:lib/src/features/feed/feed_page.dart", "target": "file:lib/src/models/post.dart", "relation": "imports", "confidence": "extracted", "line": 4 },
+    { "source": "file:lib/src/features/feed/feed_page.dart", "target": "external:package:flutter_riverpod/flutter_riverpod.dart", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/src/features/feed/feed_notifier.dart", "target": "file:lib/src/services/api_client.dart", "relation": "imports", "confidence": "extracted", "line": 3 },
+    { "source": "file:lib/src/features/feed/feed_notifier.dart", "target": "file:lib/src/models/post.dart", "relation": "imports", "confidence": "extracted", "line": 4 },
+    { "source": "file:lib/src/services/api_client.dart", "target": "external:package:http/http.dart", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/src/services/api_client.dart", "target": "external:dart:convert", "relation": "imports", "confidence": "extracted", "line": 2 },
+    { "source": "file:lib/src/services/storage.dart", "target": "external:dart:io", "relation": "imports", "confidence": "extracted", "line": 1 },
+    { "source": "file:lib/src/services/storage.dart", "target": "external:dart:async", "relation": "imports", "confidence": "extracted", "line": 2 },
+
+    // exports
+    { "source": "file:lib/src/app.dart", "target": "file:lib/src/widgets/loading_spinner.dart", "relation": "exports", "confidence": "extracted", "line": 8 },
+
+    // contains: file -> declaration
+    { "source": "file:lib/src/app.dart", "target": "class:lib/src/app.dart#HabitatApp", "relation": "contains", "confidence": "extracted", "line": 12 },
+    { "source": "file:lib/src/app.dart", "target": "function:lib/src/app.dart#buildTheme", "relation": "contains", "confidence": "extracted", "line": 60 },
+    { "source": "file:lib/main.dart", "target": "function:lib/main.dart#main", "relation": "contains", "confidence": "extracted", "line": 6 },
+    { "source": "file:lib/src/features/auth/login_page.dart", "target": "class:lib/src/features/auth/login_page.dart#LoginPage", "relation": "contains", "confidence": "extracted", "line": 18 },
+    { "source": "file:lib/src/features/auth/login_page.dart", "target": "class:lib/src/features/auth/login_page.dart#_LoginPageState", "relation": "contains", "confidence": "extracted", "line": 31 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "class:lib/src/features/auth/auth_controller.dart#AuthController", "relation": "contains", "confidence": "extracted", "line": 22 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "mixin:lib/src/features/auth/auth_controller.dart#ValidationMixin", "relation": "contains", "confidence": "extracted", "line": 70 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "enum:lib/src/features/auth/auth_controller.dart#AuthStatus", "relation": "contains", "confidence": "extracted", "line": 10 },
+    { "source": "file:lib/src/features/auth/auth_controller.dart", "target": "function:lib/src/features/auth/auth_controller.dart#authControllerProvider", "relation": "contains", "confidence": "extracted", "line": 18 },
+    { "source": "file:lib/src/features/auth/auth_repository.dart", "target": "class:lib/src/features/auth/auth_repository.dart#AuthRepository", "relation": "contains", "confidence": "extracted", "line": 9 },
+    { "source": "file:lib/src/features/feed/feed_page.dart", "target": "class:lib/src/features/feed/feed_page.dart#FeedPage", "relation": "contains", "confidence": "extracted", "line": 16 },
+    { "source": "file:lib/src/features/feed/feed_page.dart", "target": "class:lib/src/features/feed/feed_page.dart#PostCard", "relation": "contains", "confidence": "extracted", "line": 88 },
+    { "source": "file:lib/src/features/feed/feed_notifier.dart", "target": "class:lib/src/features/feed/feed_notifier.dart#FeedNotifier", "relation": "contains", "confidence": "extracted", "line": 19 },
+    { "source": "file:lib/src/features/feed/feed_notifier.dart", "target": "enum:lib/src/features/feed/feed_notifier.dart#FeedStatus", "relation": "contains", "confidence": "extracted", "line": 8 },
+    { "source": "file:lib/src/features/feed/feed_notifier.dart", "target": "function:lib/src/features/feed/feed_notifier.dart#feedNotifierProvider", "relation": "contains", "confidence": "extracted", "line": 15 },
+    { "source": "file:lib/src/models/user.dart", "target": "class:lib/src/models/user.dart#User", "relation": "contains", "confidence": "extracted", "line": 5 },
+    { "source": "file:lib/src/models/user.dart", "target": "enum:lib/src/models/user.dart#UserRole", "relation": "contains", "confidence": "extracted", "line": 40 },
+    { "source": "file:lib/src/models/post.dart", "target": "class:lib/src/models/post.dart#Post", "relation": "contains", "confidence": "extracted", "line": 5 },
+    { "source": "file:lib/src/services/api_client.dart", "target": "class:lib/src/services/api_client.dart#ApiClient", "relation": "contains", "confidence": "extracted", "line": 14 },
+    { "source": "file:lib/src/services/api_client.dart", "target": "mixin:lib/src/services/api_client.dart#RetryMixin", "relation": "contains", "confidence": "extracted", "line": 92 },
+    { "source": "file:lib/src/services/storage.dart", "target": "class:lib/src/services/storage.dart#Storage", "relation": "contains", "confidence": "extracted", "line": 7 },
+    { "source": "file:lib/src/widgets/loading_spinner.dart", "target": "class:lib/src/widgets/loading_spinner.dart#LoadingSpinner", "relation": "contains", "confidence": "extracted", "line": 6 },
+
+    // contains: class -> method
+    { "source": "class:lib/src/features/auth/auth_controller.dart#AuthController", "target": "method:lib/src/features/auth/auth_controller.dart#AuthController.login", "relation": "contains", "confidence": "extracted", "line": 30 },
+    { "source": "class:lib/src/features/auth/auth_controller.dart#AuthController", "target": "method:lib/src/features/auth/auth_controller.dart#AuthController.logout", "relation": "contains", "confidence": "extracted", "line": 48 },
+    { "source": "class:lib/src/features/feed/feed_notifier.dart#FeedNotifier", "target": "method:lib/src/features/feed/feed_notifier.dart#FeedNotifier.loadMore", "relation": "contains", "confidence": "extracted", "line": 34 },
+    { "source": "class:lib/src/services/api_client.dart#ApiClient", "target": "method:lib/src/services/api_client.dart#ApiClient.get", "relation": "contains", "confidence": "extracted", "line": 28 },
+    { "source": "class:lib/src/services/api_client.dart#ApiClient", "target": "method:lib/src/services/api_client.dart#ApiClient.post", "relation": "contains", "confidence": "extracted", "line": 52 },
+    { "source": "class:lib/src/features/auth/auth_repository.dart#AuthRepository", "target": "method:lib/src/features/auth/auth_repository.dart#AuthRepository.signIn", "relation": "contains", "confidence": "extracted", "line": 15 },
+    { "source": "class:lib/src/models/user.dart#User", "target": "method:lib/src/models/user.dart#User.fromJson", "relation": "contains", "confidence": "extracted", "line": 22 },
+    { "source": "class:lib/src/features/auth/login_page.dart#_LoginPageState", "target": "method:lib/src/features/auth/login_page.dart#_LoginPageState.build", "relation": "contains", "confidence": "extracted", "line": 38 },
+
+    // extends
+    { "source": "class:lib/src/app.dart#HabitatApp", "target": "external:StatelessWidget", "relation": "extends", "confidence": "extracted", "line": 12 },
+    { "source": "class:lib/src/features/auth/login_page.dart#LoginPage", "target": "external:StatefulWidget", "relation": "extends", "confidence": "extracted", "line": 18 },
+    { "source": "class:lib/src/features/auth/login_page.dart#_LoginPageState", "target": "external:State", "relation": "extends", "confidence": "extracted", "line": 31 },
+    { "source": "class:lib/src/features/feed/feed_page.dart#FeedPage", "target": "external:ConsumerWidget", "relation": "extends", "confidence": "extracted", "line": 16 },
+    { "source": "class:lib/src/features/feed/feed_page.dart#PostCard", "target": "external:StatelessWidget", "relation": "extends", "confidence": "extracted", "line": 88 },
+    { "source": "class:lib/src/features/auth/auth_controller.dart#AuthController", "target": "external:Notifier", "relation": "extends", "confidence": "extracted", "line": 22 },
+    { "source": "class:lib/src/features/feed/feed_notifier.dart#FeedNotifier", "target": "external:Notifier", "relation": "extends", "confidence": "extracted", "line": 19 },
+    { "source": "class:lib/src/services/storage.dart#Storage", "target": "external:ChangeNotifier", "relation": "extends", "confidence": "extracted", "line": 7 },
+    { "source": "class:lib/src/widgets/loading_spinner.dart#LoadingSpinner", "target": "external:StatelessWidget", "relation": "extends", "confidence": "extracted", "line": 6 },
+
+    // implements
+    { "source": "class:lib/src/features/auth/auth_repository.dart#AuthRepository", "target": "external:ChangeNotifier", "relation": "implements", "confidence": "inferred", "line": 9 },
+
+    // mixes_in
+    { "source": "class:lib/src/features/auth/auth_controller.dart#AuthController", "target": "external:ValidationMixin", "relation": "mixes_in", "confidence": "extracted", "line": 22 },
+    { "source": "class:lib/src/services/api_client.dart#ApiClient", "target": "external:RetryMixin", "relation": "mixes_in", "confidence": "extracted", "line": 14 },
+
+    // references
+    { "source": "class:lib/src/features/auth/auth_controller.dart#AuthController", "target": "external:User", "relation": "references", "confidence": "inferred", "line": 26 },
+    { "source": "class:lib/src/features/feed/feed_notifier.dart#FeedNotifier", "target": "external:Post", "relation": "references", "confidence": "inferred", "line": 24 },
+
+    // wiring
+    { "source": "class:lib/src/app.dart#HabitatApp", "target": "file:lib/src/features/feed/feed_page.dart", "relation": "wiring", "confidence": "inferred", "line": 40 },
+    { "source": "class:lib/src/app.dart#HabitatApp", "target": "file:lib/src/features/auth/login_page.dart", "relation": "wiring", "confidence": "inferred", "line": 42 },
+
+    // calls (ambiguous)
+    { "source": "method:lib/src/features/auth/auth_controller.dart#AuthController.login", "target": "external:signIn", "relation": "calls", "confidence": "ambiguous", "line": 33 },
+    { "source": "method:lib/src/features/auth/auth_repository.dart#AuthRepository.signIn", "target": "external:post", "relation": "calls", "confidence": "ambiguous", "line": 17 },
+    { "source": "method:lib/src/features/feed/feed_notifier.dart#FeedNotifier.loadMore", "target": "external:get", "relation": "calls", "confidence": "ambiguous", "line": 38 },
+    { "source": "method:lib/src/services/api_client.dart#ApiClient.get", "target": "external:jsonDecode", "relation": "calls", "confidence": "ambiguous", "line": 31 },
+    { "source": "method:lib/src/services/api_client.dart#ApiClient.post", "target": "external:jsonEncode", "relation": "calls", "confidence": "ambiguous", "line": 55 },
+    { "source": "method:lib/src/models/user.dart#User.fromJson", "target": "external:UserRole", "relation": "calls", "confidence": "ambiguous", "line": 25 },
+    { "source": "function:lib/main.dart#main", "target": "external:runApp", "relation": "calls", "confidence": "ambiguous", "line": 8 }
+  ]
+};
+</script>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+/* ============================================================================
+   dart_source_graph viewer — engine
+   ========================================================================== */
+(function () {
+  "use strict";
+
+  /* ---------- 1. Load data (no fetch) ---------- */
+  let GRAPH_DATA;
+  try {
+    const el = document.getElementById("graph-payload");
+    const raw = el ? el.textContent.trim() : "";
+    if (raw && raw.indexOf("GRAPH_JSON_PLACEHOLDER") === -1 && raw[0] === "{") {
+      GRAPH_DATA = JSON.parse(raw);
+    }
+  } catch (e) { console.warn("Embedded payload parse failed, using sample.", e); }
+  if (!GRAPH_DATA) GRAPH_DATA = window.__SAMPLE_GRAPH__;
+
+  /* ---------- 2. Constants ---------- */
+  const NODE_COLOR = {
+    file: "#3b82f6", class: "#10b981", mixin: "#8b5cf6", enum: "#f59e0b",
+    method: "#64748b", function: "#94a3b8", external: "#374151"
+  };
+  const NODE_SHAPE = {
+    file: "rect", class: "circle", mixin: "diamond", enum: "hexagon",
+    method: "circle-sm", function: "circle-sm", external: "circle-dashed"
+  };
+  const KIND_ORDER = ["file", "class", "mixin", "enum", "method", "function", "external"];
+  const KIND_LABEL = {
+    file: "Files", class: "Classes", mixin: "Mixins", enum: "Enums",
+    method: "Methods", function: "Functions", external: "External deps"
+  };
+
+  const EDGE_STYLE = {
+    imports:    { color: "#60a5fa", dash: null,    width: 1.4, arrow: true },
+    exports:    { color: "#60a5fa", dash: null,    width: 1.4, arrow: true },
+    part:       { color: "#6b7280", dash: null,    width: 1.2, arrow: false },
+    part_of:    { color: "#6b7280", dash: null,    width: 1.2, arrow: false },
+    contains:   { color: "#475569", dash: null,    width: 1,   arrow: false },
+    extends:    { color: "#f97316", dash: null,    width: 2.4, arrow: true },
+    implements: { color: "#a78bfa", dash: "5,4",   width: 1.6, arrow: true },
+    mixes_in:   { color: "#34d399", dash: "1.5,4", width: 1.6, arrow: true },
+    references: { color: "#94a3b8", dash: "4,4",   width: 1,   arrow: false },
+    wiring:     { color: "#f87171", dash: null,    width: 1.8, arrow: true, doubleArrow: true },
+    calls:      { color: "#fbbf24", dash: "1.5,4", width: 1,   arrow: true }
+  };
+  const REL_ORDER = ["imports", "exports", "part", "part_of", "contains", "extends", "implements", "mixes_in", "references", "wiring", "calls"];
+  const CONF_OPACITY = { extracted: 1, inferred: 0.65, ambiguous: 0.35 };
+  const CONF_ORDER = ["extracted", "inferred", "ambiguous"];
+  const CONF_DESC = { extracted: "AST-proven", inferred: "heuristic", ambiguous: "name-only" };
+
+  const IMPACT_RELS = new Set(["imports", "references", "extends", "implements", "mixes_in"]);
+  const LABELED_KINDS = new Set(["file", "class", "mixin", "enum"]);
+
+  function roleRing(role) {
+    if (!role) return null;
+    if (role.startsWith("riverpod.")) return "#2dd4bf";
+    if (role.startsWith("flutter.")) return "#3b82f6";
+    if (role.startsWith("bloc.")) return "#ef4444";
+    if (role.startsWith("getx.")) return "#f97316";
+    return "#cbd5e1";
+  }
+  const LAYER_PALETTE = ["#f0abfc", "#93c5fd", "#6ee7b7", "#fcd34d", "#fca5a5", "#a5b4fc", "#5eead4", "#fdba74"];
+  const layerColor = (function () {
+    const layers = Array.from(new Set(GRAPH_DATA.nodes.map(n => n.layer).filter(Boolean))).sort();
+    const map = {};
+    layers.forEach((l, i) => { map[l] = LAYER_PALETTE[i % LAYER_PALETTE.length]; });
+    return function (l) { return l ? map[l] : null; };
+  })();
+
+  /* ---------- 3. Derived structures ---------- */
+  const nodes = GRAPH_DATA.nodes.map(n => Object.assign({}, n));
+  const nodesById = new Map();
+  nodes.forEach(n => nodesById.set(n.id, n));
+
+  // edges: keep only those whose endpoints exist
+  const edges = [];
+  GRAPH_DATA.edges.forEach((e, i) => {
+    if (nodesById.has(e.source) && nodesById.has(e.target)) {
+      edges.push({
+        id: "e" + i, sourceId: e.source, targetId: e.target,
+        relation: e.relation, confidence: e.confidence || "extracted", line: e.line == null ? null : e.line
+      });
+    }
+  });
+
+  // degree + adjacency
+  const degree = new Map();
+  const adj = new Map();        // id -> Set(neighbor ids)
+  const outAdj = new Map();     // id -> Set (for impact traversal: who points TO target)
+  const inAdj = new Map();
+  nodes.forEach(n => { degree.set(n.id, 0); adj.set(n.id, new Set()); outAdj.set(n.id, new Set()); inAdj.set(n.id, new Set()); });
+  edges.forEach(e => {
+    degree.set(e.sourceId, degree.get(e.sourceId) + 1);
+    degree.set(e.targetId, degree.get(e.targetId) + 1);
+    adj.get(e.sourceId).add(e.targetId);
+    adj.get(e.targetId).add(e.sourceId);
+    outAdj.get(e.sourceId).add(e.targetId);
+    inAdj.get(e.targetId).add(e.sourceId);
+  });
+  nodes.forEach(n => { n.degree = degree.get(n.id); });
+
+  // contains children by file (file id -> [decl node ids declared in that file])
+  const declsByFile = new Map();
+  nodes.forEach(n => {
+    if (n.kind !== "file" && n.kind !== "external" && n.file) {
+      if (!declsByFile.has(n.file)) declsByFile.set(n.file, []);
+      declsByFile.get(n.file).push(n.id);
+    }
+  });
+
+  function radiusOf(n) {
+    let r = 6 + Math.sqrt(n.degree) * 2.6;
+    if (n.kind === "method" || n.kind === "function") r = 5 + Math.sqrt(n.degree) * 1.4;
+    if (n.kind === "external") r = 6 + Math.sqrt(n.degree) * 1.8;
+    return Math.max(n.kind === "method" || n.kind === "function" ? 4 : 6, Math.min(24, r));
+  }
+  nodes.forEach(n => { n.r = radiusOf(n); });
+
+  /* ---------- 4. State ---------- */
+  const state = {
+    kinds: {}, relations: {}, confidence: {},
+    search: "",
+    selected: null,
+    theme: document.documentElement.getAttribute("data-theme") || "dark",
+    contextFileFilter: null,   // file path string -> show only that file's nodes
+    impactSet: null,           // Set of ids highlighted via "show impact"
+    collapsedFiles: new Set()  // file ids whose contains-children are hidden
+  };
+  KIND_ORDER.forEach(k => { state.kinds[k] = (k !== "external"); });
+  REL_ORDER.forEach(r => { state.relations[r] = (r !== "contains" && r !== "calls"); });
+  CONF_ORDER.forEach(c => { state.confidence[c] = (c !== "ambiguous"); });
+
+  function defaultState() {
+    KIND_ORDER.forEach(k => { state.kinds[k] = (k !== "external"); });
+    REL_ORDER.forEach(r => { state.relations[r] = (r !== "contains" && r !== "calls"); });
+    CONF_ORDER.forEach(c => { state.confidence[c] = (c !== "ambiguous"); });
+    state.contextFileFilter = null; state.impactSet = null; state.collapsedFiles.clear();
+  }
+
+  /* ---------- 5. Counts ---------- */
+  const kindCounts = {}; KIND_ORDER.forEach(k => kindCounts[k] = 0);
+  nodes.forEach(n => { if (kindCounts[n.kind] != null) kindCounts[n.kind]++; });
+  const relCounts = {}; REL_ORDER.forEach(r => relCounts[r] = 0);
+  const confCounts = {}; CONF_ORDER.forEach(c => confCounts[c] = 0);
+  edges.forEach(e => { if (relCounts[e.relation] != null) relCounts[e.relation]++; if (confCounts[e.confidence] != null) confCounts[e.confidence]++; });
+
+  /* ---------- 6. Visibility ---------- */
+  function nodeVisible(n) {
+    if (!state.kinds[n.kind]) return false;
+    if (state.contextFileFilter) {
+      if (n.kind === "file") return n.file === state.contextFileFilter;
+      if (n.kind === "external") return false;
+      return n.file === state.contextFileFilter;
+    }
+    if (n.kind !== "file" && n.file && state.collapsedFiles.has("file:" + n.file)) return false;
+    return true;
+  }
+  function edgeVisible(e) {
+    if (!state.relations[e.relation]) return false;
+    if (!state.confidence[e.confidence]) return false;
+    return nodeVisible(nodesById.get(e.sourceId)) && nodeVisible(nodesById.get(e.targetId));
+  }
+  function recomputeVisibility() {
+    nodes.forEach(n => { n.visible = nodeVisible(n); });
+    edges.forEach(e => { e.visible = edgeVisible(e); });
+  }
+
+  // highlight set: search matches OR selection adjacency OR impact set
+  function searchMatch(n) {
+    if (!state.search) return false;
+    const q = state.search.toLowerCase();
+    return n.label.toLowerCase().includes(q) || (n.file && n.file.toLowerCase().includes(q));
+  }
+  function highlightInfo() {
+    // returns {active, nodeSet, edgePred} for fading; null if nothing active
+    if (state.selected) {
+      const set = new Set([state.selected]);
+      adj.get(state.selected).forEach(id => set.add(id));
+      return { active: true, has: id => set.has(id), edge: e => e.sourceId === state.selected || e.targetId === state.selected };
+    }
+    if (state.impactSet) {
+      const set = state.impactSet;
+      return { active: true, has: id => set.has(id), edge: e => set.has(e.sourceId) && set.has(e.targetId) };
+    }
+    if (state.search) {
+      const set = new Set(nodes.filter(searchMatch).map(n => n.id));
+      return { active: true, has: id => set.has(id), edge: e => set.has(e.sourceId) || set.has(e.targetId) };
+    }
+    return { active: false, has: () => true, edge: () => true };
+  }
+
+  /* ---------- 7. Layout (static, 300 ticks) ---------- */
+  const mainEl = document.getElementById("main");
+  let W = mainEl.clientWidth, H = mainEl.clientHeight;
+  const sim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(edges.map(e => ({ source: e.sourceId, target: e.targetId, relation: e.relation })))
+      .id(d => d.id)
+      .distance(e => e.relation === "contains" ? 34 : (e.relation === "imports" ? 95 : 70))
+      .strength(e => e.relation === "contains" ? 0.7 : 0.25))
+    .force("charge", d3.forceManyBody().strength(n => -180 - n.r * 14).distanceMax(620))
+    .force("center", d3.forceCenter(W / 2, H / 2))
+    .force("collide", d3.forceCollide().radius(n => n.r + 8).iterations(2))
+    .force("x", d3.forceX(W / 2).strength(0.03))
+    .force("y", d3.forceY(H / 2).strength(0.03))
+    .stop();
+  for (let i = 0; i < 300; i++) sim.tick();
+  sim.stop();
+
+  /* ---------- 8. Renderer selection ---------- */
+  const declaredCount = (GRAPH_DATA.summary && GRAPH_DATA.summary.nodes) || 0;
+  const useCanvas = Math.max(declaredCount, nodes.length) > 500;
+  const viz = document.getElementById("viz");
+  let transform = d3.zoomIdentity;
+
+  /* shared zoom behavior */
+  const zoom = d3.zoom().scaleExtent([0.1, 6]).on("zoom", (ev) => {
+    transform = ev.transform;
+    applyTransform();
+    document.getElementById("zoom-pct").textContent = Math.round(transform.k * 100) + "%";
+  });
+
+  /* ====================================================================== */
+  /*  SVG RENDERER                                                          */
+  /* ====================================================================== */
+  let svg, gZoom, gLinks, gNodes, linkSel, nodeSel;
+  let canvas, ctx, DPR = 1;
+
+  function buildMarkers(defs) {
+    const arrowColors = {};
+    Object.keys(EDGE_STYLE).forEach(r => { if (EDGE_STYLE[r].arrow) arrowColors[EDGE_STYLE[r].color] = true; });
+    Object.keys(arrowColors).forEach(color => {
+      const id = "arrow-" + color.replace("#", "");
+      const m = defs.append("marker").attr("id", id).attr("viewBox", "0 0 10 10")
+        .attr("refX", 9).attr("refY", 5).attr("markerWidth", 7).attr("markerHeight", 7).attr("orient", "auto-start-reverse");
+      m.append("path").attr("d", "M0,0 L10,5 L0,10 z").attr("fill", color);
+    });
+  }
+
+  function initSVG() {
+    document.getElementById("render-mode").textContent = "SVG";
+    svg = d3.select(viz).append("svg").attr("width", "100%").attr("height", "100%");
+    const defs = svg.append("defs");
+    buildMarkers(defs);
+    // layer glow filter
+    const f = defs.append("filter").attr("id", "layer-glow").attr("x", "-60%").attr("y", "-60%").attr("width", "220%").attr("height", "220%");
+    f.append("feGaussianBlur").attr("stdDeviation", 5).attr("result", "b");
+    const merge = f.append("feMerge"); merge.append("feMergeNode").attr("in", "b"); merge.append("feMergeNode").attr("in", "SourceGraphic");
+
+    gZoom = svg.append("g").attr("class", "zoom-layer");
+    gLinks = gZoom.append("g").attr("class", "links");
+    gNodes = gZoom.append("g").attr("class", "nodes");
+
+    // links
+    linkSel = gLinks.selectAll("line").data(edges, d => d.id).enter().append("line")
+      .attr("class", "link")
+      .attr("stroke", d => EDGE_STYLE[d.relation] ? EDGE_STYLE[d.relation].color : "#888")
+      .attr("stroke-width", d => EDGE_STYLE[d.relation] ? EDGE_STYLE[d.relation].width : 1)
+      .attr("stroke-dasharray", d => EDGE_STYLE[d.relation] && EDGE_STYLE[d.relation].dash ? EDGE_STYLE[d.relation].dash : null)
+      .attr("marker-end", d => {
+        const s = EDGE_STYLE[d.relation];
+        return s && s.arrow ? "url(#arrow-" + s.color.replace("#", "") + ")" : null;
+      })
+      .attr("marker-start", d => {
+        const s = EDGE_STYLE[d.relation];
+        return s && s.doubleArrow ? "url(#arrow-" + s.color.replace("#", "") + ")" : null;
+      });
+
+    // nodes
+    nodeSel = gNodes.selectAll("g.node").data(nodes, d => d.id).enter().append("g")
+      .attr("class", "node")
+      .each(function (d) { buildNodeShape(d3.select(this), d); });
+
+    nodeSel.append("title").text(d => tooltipText(d));
+
+    nodeSel.append("text").attr("class", "node-label lbl-stroke")
+      .attr("text-anchor", "middle")
+      .attr("dy", d => d.r + 11)
+      .text(d => d.label);
+
+    // hit target (transparent, larger)
+    nodeSel.append("circle").attr("class", "node-hit").attr("r", d => Math.max(d.r + 4, 10)).attr("fill", "transparent");
+
+    attachSVGInteractions();
+    updateSVGStyles();
+    updatePositions();
+  }
+
+  function buildNodeShape(g, d) {
+    const color = NODE_COLOR[d.kind];
+    const r = d.r;
+    // layer glow
+    if (d.layer) {
+      g.append("circle").attr("class", "layer-glow").attr("r", r + 3)
+        .attr("fill", layerColor(d.layer)).attr("opacity", 0.28).attr("filter", "url(#layer-glow)");
+    }
+    // role ring
+    const ring = roleRing(d.role);
+    if (ring) {
+      g.append("circle").attr("class", "role-ring").attr("r", r + 3.5)
+        .attr("fill", "none").attr("stroke", ring).attr("stroke-width", 2);
+    }
+    const shape = NODE_SHAPE[d.kind];
+    let s;
+    if (shape === "rect") {
+      const w = r * 2.2, h = r * 1.7;
+      s = g.append("rect").attr("x", -w / 2).attr("y", -h / 2).attr("width", w).attr("height", h).attr("rx", 4);
+    } else if (shape === "diamond") {
+      s = g.append("path").attr("d", `M0,${-r} L${r},0 L0,${r} L${-r},0 Z`);
+    } else if (shape === "hexagon") {
+      s = g.append("path").attr("d", hexPath(r));
+    } else if (shape === "circle-dashed") {
+      s = g.append("circle").attr("r", r).attr("stroke-dasharray", "2.5,2.5").attr("stroke", "#94a3b8").attr("stroke-width", 1.2);
+    } else {
+      s = g.append("circle").attr("r", r);
+    }
+    s.attr("class", "node-shape").attr("fill", color);
+    if (d.kind === "method") s.attr("opacity", 0.6);
+    if (d.kind === "function") s.attr("opacity", 0.6);
+    if (d.kind === "external") s.attr("fill-opacity", 0.4);
+    // pin indicator
+    g.append("circle").attr("class", "pin-dot").attr("r", 2.5).attr("cx", r * 0.8).attr("cy", -r * 0.8)
+      .attr("fill", "#38bdf8").style("display", "none");
+  }
+
+  function hexPath(r) {
+    let p = "";
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 180 * (60 * i - 90);
+      p += (i ? "L" : "M") + (r * Math.cos(a)).toFixed(2) + "," + (r * Math.sin(a)).toFixed(2) + " ";
+    }
+    return p + "Z";
+  }
+
+  function updateSVGStyles() {
+    const hi = highlightInfo();
+    nodeSel.style("display", d => d.visible ? null : "none")
+      .classed("faded", d => hi.active && !hi.has(d.id))
+      .classed("pinned", d => d.fx != null);
+    nodeSel.select(".pin-dot").style("display", d => d.fx != null ? "block" : "none");
+    nodeSel.select(".node-shape").attr("stroke", d => d.id === state.selected ? "#fff" : null)
+      .attr("stroke-width", d => d.id === state.selected ? 2.5 : (d.kind === "external" ? 1.2 : null));
+    // labels: visible for labeled kinds OR highlighted/selected
+    nodeSel.select("text").style("display", d => {
+      if (!d.visible) return "none";
+      if (LABELED_KINDS.has(d.kind)) return null;
+      if (state.selected === d.id) return null;
+      if (hi.active && hi.has(d.id) && (state.search || state.impactSet)) return null;
+      return "none";
+    });
+    linkSel.style("display", d => d.visible ? null : "none")
+      .style("opacity", d => {
+        const base = CONF_OPACITY[d.confidence] != null ? CONF_OPACITY[d.confidence] : 1;
+        if (hi.active && !hi.edge(d)) return 0.04;
+        return base;
+      })
+      .classed("faded", d => hi.active && !hi.edge(d));
+  }
+
+  function updatePositions() {
+    linkSel.each(function (d) {
+      const s = nodesById.get(d.sourceId), t = nodesById.get(d.targetId);
+      const dx = t.x - s.x, dy = t.y - s.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const ux = dx / dist, uy = dy / dist;
+      const st = EDGE_STYLE[d.relation] || {};
+      const tPad = t.r + (st.arrow ? 6 : 2);
+      const sPad = s.r + (st.doubleArrow ? 6 : 1);
+      d3.select(this)
+        .attr("x1", s.x + ux * sPad).attr("y1", s.y + uy * sPad)
+        .attr("x2", t.x - ux * tPad).attr("y2", t.y - uy * tPad);
+    });
+    nodeSel.attr("transform", d => `translate(${d.x},${d.y})`);
+  }
+
+  function attachSVGInteractions() {
+    svg.call(zoom).on("dblclick.zoom", null);
+    svg.on("click", () => { clearSelection(); });
+
+    const drag = d3.drag()
+      .on("start", function (ev, d) { hideTooltip(); })
+      .on("drag", function (ev, d) {
+        d.x = ev.x; d.y = ev.y; d.fx = ev.x; d.fy = ev.y;
+        d3.select(this).select(".pin-dot").style("display", "block");
+        d3.select(this).classed("pinned", true);
+        updatePositions();
+      })
+      .on("end", function (ev, d) { });
+    nodeSel.call(drag);
+
+    nodeSel.on("click", function (ev, d) { ev.stopPropagation(); selectNode(d.id); })
+      .on("dblclick", function (ev, d) { ev.stopPropagation(); d.fx = null; d.fy = null; d3.select(this).select(".pin-dot").style("display", "none"); d3.select(this).classed("pinned", false); })
+      .on("mouseenter", function (ev, d) { showTooltip(ev, d); })
+      .on("mousemove", function (ev, d) { moveTooltip(ev); })
+      .on("mouseleave", function () { hideTooltip(); })
+      .on("contextmenu", function (ev, d) { ev.preventDefault(); ev.stopPropagation(); openContextMenu(ev, d); });
+  }
+
+  /* ====================================================================== */
+  /*  CANVAS RENDERER                                                       */
+  /* ====================================================================== */
+  function initCanvas() {
+    document.getElementById("render-mode").textContent = "Canvas";
+    canvas = d3.select(viz).append("canvas").node();
+    ctx = canvas.getContext("2d");
+    sizeCanvas();
+    const sel = d3.select(canvas);
+    sel.call(zoom).on("dblclick.zoom", null);
+
+    sel.on("click", function (ev) {
+      const n = pick(ev);
+      if (n) selectNode(n.id); else clearSelection();
+    });
+    sel.on("mousemove", function (ev) {
+      const n = pick(ev);
+      if (n) { canvas.style.cursor = "pointer"; showTooltip(ev, n); moveTooltip(ev); }
+      else { canvas.style.cursor = "default"; hideTooltip(); }
+    });
+    sel.on("mouseleave", hideTooltip);
+    sel.on("contextmenu", function (ev) { ev.preventDefault(); const n = pick(ev); if (n) openContextMenu(ev, n); });
+    sel.on("dblclick", function (ev) { const n = pick(ev); if (n) { n.fx = null; n.fy = null; drawCanvas(); } });
+
+    const drag = d3.drag()
+      .subject(function (ev) { return pick(ev, true); })
+      .on("drag", function (ev) {
+        if (!ev.subject) return;
+        const p = transform.invert([ev.x, ev.y]);
+        ev.subject.x = p[0]; ev.subject.y = p[1]; ev.subject.fx = p[0]; ev.subject.fy = p[1];
+        drawCanvas();
+      });
+    sel.call(drag);
+    drawCanvas();
+  }
+
+  function sizeCanvas() {
+    DPR = window.devicePixelRatio || 1;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  }
+
+  function pick(ev, forDrag) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX != null ? ev.clientX : ev.sourceEvent.clientX) - rect.left;
+    const y = (ev.clientY != null ? ev.clientY : ev.sourceEvent.clientY) - rect.top;
+    const p = transform.invert([x, y]);
+    let best = null, bestD = Infinity;
+    for (const n of nodes) {
+      if (!n.visible) continue;
+      const dx = n.x - p[0], dy = n.y - p[1];
+      const d2 = dx * dx + dy * dy;
+      const rr = Math.max(n.r + 3, 8);
+      if (d2 < rr * rr && d2 < bestD) { bestD = d2; best = n; }
+    }
+    return best;
+  }
+
+  function drawCanvas() {
+    const hi = highlightInfo();
+    const cssText = getComputedStyle(document.documentElement);
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(DPR, DPR);
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+
+    // edges
+    for (const e of edges) {
+      if (!e.visible) continue;
+      const s = nodesById.get(e.sourceId), t = nodesById.get(e.targetId);
+      const st = EDGE_STYLE[e.relation] || { color: "#888", width: 1 };
+      let op = CONF_OPACITY[e.confidence] != null ? CONF_OPACITY[e.confidence] : 1;
+      if (hi.active && !hi.edge(e)) op = 0.04;
+      ctx.globalAlpha = op;
+      ctx.strokeStyle = st.color; ctx.lineWidth = st.width / Math.max(transform.k, 1) * Math.max(transform.k, 1);
+      ctx.lineWidth = st.width;
+      ctx.setLineDash(st.dash ? st.dash.split(",").map(Number) : []);
+      const dx = t.x - s.x, dy = t.y - s.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const ux = dx / dist, uy = dy / dist;
+      const x2 = t.x - ux * (t.r + (st.arrow ? 5 : 1)), y2 = t.y - uy * (t.r + (st.arrow ? 5 : 1));
+      const x1 = s.x + ux * s.r, y1 = s.y + uy * s.r;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      if (st.arrow) drawArrowHead(x2, y2, ux, uy, st.color);
+      if (st.doubleArrow) drawArrowHead(x1, y1, -ux, -uy, st.color);
+    }
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    // nodes
+    for (const n of nodes) {
+      if (!n.visible) continue;
+      const faded = hi.active && !hi.has(n.id);
+      ctx.globalAlpha = faded ? 0.12 : 1;
+      drawCanvasNode(n);
+    }
+    // labels (only for non-faded labeled kinds, or selected) — drawn at end
+    ctx.globalAlpha = 1;
+    const showLabelZoom = transform.k > 0.55;
+    for (const n of nodes) {
+      if (!n.visible) continue;
+      const faded = hi.active && !hi.has(n.id);
+      const want = (LABELED_KINDS.has(n.kind) && showLabelZoom) || state.selected === n.id || (hi.active && hi.has(n.id) && (state.search || state.impactSet));
+      if (!want || faded) continue;
+      ctx.font = "10px Inter, system-ui, sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "top";
+      ctx.lineWidth = 3; ctx.strokeStyle = cssText.getPropertyValue("--canvas-bg") || "#0b1220";
+      ctx.lineJoin = "round";
+      ctx.strokeText(n.label, n.x, n.y + n.r + 3);
+      ctx.fillStyle = cssText.getPropertyValue("--text") || "#f1f5f9";
+      ctx.fillText(n.label, n.x, n.y + n.r + 3);
+    }
+    ctx.restore();
+  }
+
+  function drawArrowHead(x, y, ux, uy, color) {
+    const len = 6, w = 3.2;
+    const ax = -uy, ay = ux;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - ux * len + ax * w, y - uy * len + ay * w);
+    ctx.lineTo(x - ux * len - ax * w, y - uy * len - ay * w);
+    ctx.closePath();
+    ctx.fillStyle = color; ctx.fill();
+  }
+
+  function drawCanvasNode(n) {
+    const r = n.r, color = NODE_COLOR[n.kind];
+    // layer glow
+    if (n.layer) {
+      ctx.save();
+      ctx.shadowColor = layerColor(n.layer); ctx.shadowBlur = 12;
+      ctx.fillStyle = layerColor(n.layer); ctx.globalAlpha = (ctx.globalAlpha) * 0.0001;
+      ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI); ctx.fill();
+      ctx.restore();
+    }
+    ctx.save();
+    const ring = roleRing(n.role);
+    ctx.beginPath();
+    const sh = NODE_SHAPE[n.kind];
+    if (sh === "rect") { rr(ctx, n.x - r * 1.1, n.y - r * 0.85, r * 2.2, r * 1.7, 4); }
+    else if (sh === "diamond") { ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y); ctx.closePath(); }
+    else if (sh === "hexagon") { for (let i = 0; i < 6; i++) { const a = Math.PI / 180 * (60 * i - 90); const px = n.x + r * Math.cos(a), py = n.y + r * Math.sin(a); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); } ctx.closePath(); }
+    else { ctx.arc(n.x, n.y, r, 0, 2 * Math.PI); }
+    ctx.fillStyle = color;
+    ctx.globalAlpha = (n.kind === "external" ? 0.4 : (n.kind === "method" || n.kind === "function" ? 0.6 : 1)) * ctx.globalAlpha;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    if (n.kind === "external") { ctx.setLineDash([2.5, 2.5]); ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 1.2; ctx.stroke(); ctx.setLineDash([]); }
+    if (n.id === state.selected) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5; ctx.stroke(); }
+    ctx.restore();
+    if (ring) { ctx.beginPath(); ctx.arc(n.x, n.y, r + 3.5, 0, 2 * Math.PI); ctx.strokeStyle = ring; ctx.lineWidth = 2; ctx.stroke(); }
+    if (n.fx != null) { ctx.beginPath(); ctx.arc(n.x + r * 0.8, n.y - r * 0.8, 2.5, 0, 2 * Math.PI); ctx.fillStyle = "#38bdf8"; ctx.fill(); }
+  }
+  function rr(c, x, y, w, h, rad) {
+    c.moveTo(x + rad, y); c.arcTo(x + w, y, x + w, y + h, rad); c.arcTo(x + w, y + h, x, y + h, rad);
+    c.arcTo(x, y + h, x, y, rad); c.arcTo(x, y, x + w, y, rad); c.closePath();
+  }
+
+  /* ---------- transform / redraw dispatch ---------- */
+  function applyTransform() {
+    if (useCanvas) drawCanvas();
+    else gZoom.attr("transform", transform);
+  }
+  function redraw() {
+    recomputeVisibility();
+    if (useCanvas) drawCanvas(); else updateSVGStyles();
+    updateVisibleCount();
+  }
+  function updateVisibleCount() {
+    document.getElementById("visible-count").textContent = nodes.filter(n => n.visible).length;
+  }
+
+  /* ====================================================================== */
+  /*  TOOLTIP                                                               */
+  /* ====================================================================== */
+  const tooltip = document.getElementById("tooltip");
+  function tooltipText(d) {
+    let s = d.label + " · " + d.kind;
+    if (d.file) s += "\n" + d.file + (d.line ? ":" + d.line : "");
+    if (d.layer) s += "\nlayer: " + d.layer;
+    if (d.role) s += "\nrole: " + d.role;
+    return s;
+  }
+  function showTooltip(ev, d) {
+    let html = `<div class="tt-title"><span class="kind-pill" style="background:${NODE_COLOR[d.kind]}">${d.kind}</span>${escapeHtml(d.label)}</div>`;
+    if (d.file) html += `<div class="tt-row mono"><b>${escapeHtml(d.file)}</b>${d.line ? ":" + d.line : ""}</div>`;
+    if (d.layer) html += `<div class="tt-row">layer: <b>${escapeHtml(d.layer)}</b></div>`;
+    if (d.role) html += `<div class="tt-row">role: <b>${escapeHtml(d.role)}</b></div>`;
+    html += `<div class="tt-row">degree: <b>${d.degree}</b></div>`;
+    tooltip.innerHTML = html;
+    tooltip.style.display = "block";
+    moveTooltip(ev);
+  }
+  function moveTooltip(ev) {
+    const x = ev.clientX, y = ev.clientY;
+    const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+    let lx = x + 14, ly = y + 14;
+    if (lx + tw > window.innerWidth - 8) lx = x - tw - 14;
+    if (ly + th > window.innerHeight - 8) ly = y - th - 14;
+    tooltip.style.left = lx + "px"; tooltip.style.top = ly + "px";
+  }
+  function hideTooltip() { tooltip.style.display = "none"; }
+
+  /* ====================================================================== */
+  /*  SELECTION + DRAWER                                                    */
+  /* ====================================================================== */
+  function selectNode(id) {
+    state.selected = id;
+    hideTooltip();
+    redraw();
+    openDrawer(nodesById.get(id));
+  }
+  function clearSelection() {
+    if (!state.selected) return;
+    state.selected = null;
+    closeDrawer();
+    redraw();
+  }
+
+  const drawer = document.getElementById("drawer");
+  function openDrawer(d) {
+    const left = document.getElementById("dr-left");
+    let lh = `<h2>${escapeHtml(d.label)}</h2><div class="dr-badges">`;
+    lh += `<span class="badge"><span class="dot" style="background:${NODE_COLOR[d.kind]}"></span>${d.kind}</span>`;
+    if (d.layer) lh += `<span class="badge"><span class="dot" style="background:${layerColor(d.layer)}"></span>layer: ${escapeHtml(d.layer)}</span>`;
+    if (d.role) lh += `<span class="badge"><span class="dot" style="background:${roleRing(d.role)}"></span>${escapeHtml(d.role)}</span>`;
+    lh += `</div><div class="dr-meta">`;
+    if (d.file) lh += `<div class="mrow"><span class="mk">file</span><span class="mv mono">${escapeHtml(d.file)}</span></div>`;
+    if (d.line) lh += `<div class="mrow"><span class="mk">line</span><span class="mv mono">${d.line}</span></div>`;
+    lh += `<div class="mrow"><span class="mk">degree</span><span class="mv">${d.degree} edge${d.degree === 1 ? "" : "s"}</span></div>`;
+    lh += `<div class="mrow"><span class="mk">id</span><span class="mv mono" style="font-size:10px;color:var(--text-faint)">${escapeHtml(d.id)}</span></div>`;
+    lh += `</div>`;
+    left.innerHTML = lh;
+
+    const incoming = edges.filter(e => e.targetId === d.id);
+    const outgoing = edges.filter(e => e.sourceId === d.id);
+    document.getElementById("dr-right").innerHTML =
+      edgeColumn("Incoming", incoming, "source", d.id) +
+      edgeColumn("Outgoing", outgoing, "target", d.id);
+    bindEdgeItems();
+    drawer.classList.add("open"); drawer.setAttribute("aria-hidden", "false");
+  }
+  function closeDrawer() { drawer.classList.remove("open"); drawer.setAttribute("aria-hidden", "true"); }
+
+  function edgeColumn(title, list, otherKey, selfId) {
+    let h = `<div class="edge-col" data-col="${title}"><h3>${title} <span class="cnt">${list.length}</span></h3>`;
+    if (list.length === 0) { h += `<div class="empty-edges">No ${title.toLowerCase()} edges.</div></div>`; return h; }
+    // group by relation
+    const groups = {};
+    list.forEach(e => { (groups[e.relation] = groups[e.relation] || []).push(e); });
+    const limited = list.length > 10;
+    let shown = 0;
+    h += `<div class="edge-body" data-full="false">`;
+    REL_ORDER.forEach(rel => {
+      if (!groups[rel]) return;
+      const st = EDGE_STYLE[rel] || { color: "#888" };
+      h += `<div class="rel-group"><div class="rel-name" style="color:${st.color}"><span class="ei-shape" style="width:12px;height:0;border-top:2px ${st.dash ? "dashed" : "solid"} ${st.color}"></span>${rel}</div>`;
+      groups[rel].forEach(e => {
+        const otherId = otherKey === "source" ? e.sourceId : e.targetId;
+        const other = nodesById.get(otherId);
+        const hideClass = (limited && shown >= 10) ? " extra-edge" : "";
+        h += `<div class="edge-item${hideClass}" data-id="${escapeAttr(otherId)}"><span class="ei-shape" style="width:9px;height:9px;border-radius:${other.kind === "file" ? "2px" : "50%"};background:${NODE_COLOR[other.kind]}"></span><span class="ei-label">${escapeHtml(other.label)}</span><span class="ei-conf">${e.confidence[0]}</span></div>`;
+        shown++;
+      });
+      h += `</div>`;
+    });
+    h += `</div>`;
+    if (limited) h += `<button class="show-all-btn" data-toggle-all>Show all ${list.length} edges</button>`;
+    h += `</div>`;
+    return h;
+  }
+  function bindEdgeItems() {
+    document.querySelectorAll("#dr-right .edge-item").forEach(it => {
+      it.addEventListener("click", () => { const id = it.getAttribute("data-id"); selectNode(id); centerOnNode(nodesById.get(id)); });
+    });
+    document.querySelectorAll("#dr-right [data-toggle-all]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const body = btn.previousElementSibling;
+        const full = body.getAttribute("data-full") === "true";
+        body.querySelectorAll(".extra-edge").forEach(x => x.style.display = full ? "none" : "flex");
+        body.setAttribute("data-full", full ? "false" : "true");
+        btn.textContent = full ? ("Show all edges") : "Show fewer";
+      });
+    });
+  }
+
+  /* ====================================================================== */
+  /*  CONTEXT MENU                                                          */
+  /* ====================================================================== */
+  const ctxMenu = document.getElementById("ctx-menu");
+  function openContextMenu(ev, d) {
+    hideTooltip();
+    let h = `<div class="ctx-sub">${escapeHtml(d.label)}</div>`;
+    const filePath = d.kind === "file" ? d.file : d.file;
+    h += `<button data-act="file" ${filePath ? "" : "disabled"}><span class="ico">▤</span> Show only this file's nodes</button>`;
+    h += `<button data-act="impact"><span class="ico">⇲</span> Show impact (dependents)</button>`;
+    const isFile = d.kind === "file";
+    const collapsed = state.collapsedFiles.has(d.id);
+    h += `<button data-act="collapse" ${isFile ? "" : "disabled"}><span class="ico">${collapsed ? "▸" : "▾"}</span> ${collapsed ? "Expand" : "Collapse"} children${isFile ? "" : " (files only)"}</button>`;
+    ctxMenu.innerHTML = h;
+    ctxMenu.style.display = "block";
+    let lx = ev.clientX, ly = ev.clientY;
+    const mw = ctxMenu.offsetWidth, mh = ctxMenu.offsetHeight;
+    if (lx + mw > window.innerWidth - 8) lx -= mw;
+    if (ly + mh > window.innerHeight - 8) ly -= mh;
+    ctxMenu.style.left = lx + "px"; ctxMenu.style.top = ly + "px";
+
+    ctxMenu.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+      const act = b.getAttribute("data-act");
+      if (act === "file" && filePath) { state.contextFileFilter = filePath; state.impactSet = null; showContextBanner(`Showing only nodes in ${filePath}`); redraw(); fitView(); }
+      else if (act === "impact") { computeImpact(d.id); showContextBanner(`Impact: ${state.impactSet.size} node(s) reach “${d.label}”`); redraw(); }
+      else if (act === "collapse" && isFile) { if (collapsed) state.collapsedFiles.delete(d.id); else state.collapsedFiles.add(d.id); redraw(); }
+      closeContextMenu();
+    }));
+  }
+  function closeContextMenu() { ctxMenu.style.display = "none"; }
+
+  function computeImpact(targetId) {
+    // all nodes that have a path TO target via IMPACT_RELS (follow edges backward)
+    const reached = new Set([targetId]);
+    const stack = [targetId];
+    while (stack.length) {
+      const cur = stack.pop();
+      edges.forEach(e => {
+        if (!IMPACT_RELS.has(e.relation)) return;
+        if (e.targetId === cur && !reached.has(e.sourceId)) { reached.add(e.sourceId); stack.push(e.sourceId); }
+      });
+    }
+    state.impactSet = reached;
+    state.selected = null; closeDrawer();
+  }
+
+  const banner = document.getElementById("context-banner");
+  function showContextBanner(text) { document.getElementById("context-banner-text").textContent = text; banner.classList.add("show"); }
+  function hideContextBanner() { banner.classList.remove("show"); }
+  document.getElementById("context-banner-clear").addEventListener("click", () => {
+    state.contextFileFilter = null; state.impactSet = null; hideContextBanner(); redraw();
+  });
+
+  /* ====================================================================== */
+  /*  ZOOM / FIT / EXPORT                                                   */
+  /* ====================================================================== */
+  function zoomTarget() { return useCanvas ? d3.select(canvas) : svg; }
+  function centerOnNode(n, scale) {
+    const k = scale || Math.max(transform.k, 1.2);
+    const tx = W / 2 - n.x * k, ty = H / 2 - n.y * k;
+    zoomTarget().transition().duration(450).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+  }
+  function fitView() {
+    const vis = nodes.filter(n => n.visible);
+    if (!vis.length) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    vis.forEach(n => { minX = Math.min(minX, n.x - n.r); minY = Math.min(minY, n.y - n.r); maxX = Math.max(maxX, n.x + n.r); maxY = Math.max(maxY, n.y + n.r); });
+    const pad = 60;
+    const bw = (maxX - minX) || 1, bh = (maxY - minY) || 1;
+    const k = Math.min(6, Math.max(0.1, Math.min((W - pad * 2) / bw, (H - pad * 2) / bh)));
+    const tx = W / 2 - ((minX + maxX) / 2) * k, ty = H / 2 - ((minY + maxY) / 2) * k;
+    zoomTarget().transition().duration(450).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+  }
+
+  function buildExportSVG() {
+    const vis = nodes.filter(n => n.visible);
+    const visE = edges.filter(e => e.visible);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    vis.forEach(n => { minX = Math.min(minX, n.x - n.r - 20); minY = Math.min(minY, n.y - n.r - 30); maxX = Math.max(maxX, n.x + n.r + 20); maxY = Math.max(maxY, n.y + n.r + 30); });
+    if (!isFinite(minX)) { minX = 0; minY = 0; maxX = W; maxY = H; }
+    const w = maxX - minX, h = maxY - minY;
+    const bg = state.theme === "dark" ? "#0b1220" : "#ffffff";
+    const txt = state.theme === "dark" ? "#f1f5f9" : "#0f172a";
+    let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w)}" height="${Math.round(h)}" viewBox="${minX} ${minY} ${w} ${h}"><rect x="${minX}" y="${minY}" width="${w}" height="${h}" fill="${bg}"/>`;
+    s += `<defs>`;
+    const arrowColors = {}; Object.keys(EDGE_STYLE).forEach(r => { if (EDGE_STYLE[r].arrow) arrowColors[EDGE_STYLE[r].color] = 1; });
+    Object.keys(arrowColors).forEach(c => { s += `<marker id="a${c.replace("#", "")}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${c}"/></marker>`; });
+    s += `</defs>`;
+    visE.forEach(e => {
+      const a = nodesById.get(e.sourceId), b = nodesById.get(e.targetId), st = EDGE_STYLE[e.relation] || {};
+      const dx = b.x - a.x, dy = b.y - a.y, dist = Math.sqrt(dx * dx + dy * dy) || 1, ux = dx / dist, uy = dy / dist;
+      const x2 = b.x - ux * (b.r + (st.arrow ? 6 : 1)), y2 = b.y - uy * (b.r + (st.arrow ? 6 : 1));
+      const op = CONF_OPACITY[e.confidence] != null ? CONF_OPACITY[e.confidence] : 1;
+      s += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${st.color}" stroke-width="${st.width}" opacity="${op}"${st.dash ? ` stroke-dasharray="${st.dash}"` : ""}${st.arrow ? ` marker-end="url(#a${st.color.replace("#", "")})"` : ""}/>`;
+    });
+    vis.forEach(n => {
+      const c = NODE_COLOR[n.kind], r = n.r, sh = NODE_SHAPE[n.kind];
+      const ring = roleRing(n.role);
+      if (ring) s += `<circle cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${r + 3.5}" fill="none" stroke="${ring}" stroke-width="2"/>`;
+      if (sh === "rect") s += `<rect x="${(n.x - r * 1.1).toFixed(1)}" y="${(n.y - r * 0.85).toFixed(1)}" width="${(r * 2.2).toFixed(1)}" height="${(r * 1.7).toFixed(1)}" rx="4" fill="${c}"/>`;
+      else if (sh === "diamond") s += `<path d="M${n.x},${n.y - r} L${n.x + r},${n.y} L${n.x},${n.y + r} L${n.x - r},${n.y} Z" fill="${c}"/>`;
+      else if (sh === "hexagon") { let p = ""; for (let i = 0; i < 6; i++) { const a = Math.PI / 180 * (60 * i - 90); p += (i ? "L" : "M") + (n.x + r * Math.cos(a)).toFixed(1) + "," + (n.y + r * Math.sin(a)).toFixed(1) + " "; } s += `<path d="${p}Z" fill="${c}"/>`; }
+      else s += `<circle cx="${n.x.toFixed(1)}" cy="${n.y.toFixed(1)}" r="${r}" fill="${c}" ${n.kind === "external" ? 'fill-opacity="0.4" stroke="#94a3b8" stroke-dasharray="2.5,2.5"' : (n.kind === "method" || n.kind === "function" ? 'fill-opacity="0.6"' : "")}/>`;
+      if (LABELED_KINDS.has(n.kind)) s += `<text x="${n.x.toFixed(1)}" y="${(n.y + r + 11).toFixed(1)}" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="${txt}">${escapeHtml(n.label)}</text>`;
+    });
+    s += `</svg>`;
+    return s;
+  }
+  function exportSVG() {
+    const blob = new Blob([buildExportSVG()], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = (GRAPH_DATA.package || "graph") + "-graph.svg";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /* ====================================================================== */
+  /*  SIDEBAR                                                               */
+  /* ====================================================================== */
+  function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function escapeAttr(s) { return escapeHtml(s).replace(/'/g, "&#39;"); }
+
+  function renderHeader() {
+    document.getElementById("pkg-name").textContent = GRAPH_DATA.package || "package";
+    document.getElementById("schema-badge").textContent = "v" + (GRAPH_DATA.schema_version || "1.0.0");
+    let dateStr = "—";
+    if (GRAPH_DATA.generated_at) {
+      const d = new Date(GRAPH_DATA.generated_at);
+      if (!isNaN(d)) dateStr = d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    }
+    document.getElementById("gen-date").textContent = "Generated " + dateStr;
+    document.getElementById("stat-nodes").textContent = nodes.length.toLocaleString();
+    document.getElementById("stat-edges").textContent = edges.length.toLocaleString();
+    document.getElementById("stat-files").textContent = (kindCounts.file || 0).toLocaleString();
+    document.getElementById("stat-ext").textContent = (kindCounts.external || 0).toLocaleString();
+  }
+
+  function shapeGlyph(kind) {
+    const c = NODE_COLOR[kind], sh = NODE_SHAPE[kind];
+    if (sh === "rect") return `<svg width="14" height="14" viewBox="0 0 14 14"><rect x="2" y="3.5" width="10" height="7" rx="2" fill="${c}"/></svg>`;
+    if (sh === "diamond") return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M7,1.5 L12.5,7 L7,12.5 L1.5,7 Z" fill="${c}"/></svg>`;
+    if (sh === "hexagon") return `<svg width="14" height="14" viewBox="0 0 14 14"><path d="M7,1.5 L11.7,4.25 L11.7,9.75 L7,12.5 L2.3,9.75 L2.3,4.25 Z" fill="${c}"/></svg>`;
+    if (sh === "circle-dashed") return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="${c}" fill-opacity="0.4" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="2.5,2.5"/></svg>`;
+    if (sh === "circle-sm") return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="3.4" fill="${c}" fill-opacity="0.6"/></svg>`;
+    return `<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="${c}"/></svg>`;
+  }
+
+  function renderFilters() {
+    const kg = document.getElementById("fg-kinds");
+    KIND_ORDER.forEach(k => {
+      const row = document.createElement("label"); row.className = "check"; row.setAttribute("data-kind", k);
+      row.innerHTML = `<input type="checkbox" ${state.kinds[k] ? "checked" : ""}/><span class="box"></span><span class="glyph">${shapeGlyph(k)}</span><span class="ck-label">${KIND_LABEL[k]}</span><span class="ck-count">${kindCounts[k] || 0}</span>`;
+      row.querySelector("input").addEventListener("change", e => { state.kinds[k] = e.target.checked; row.classList.toggle("off", !e.target.checked); redraw(); });
+      row.classList.toggle("off", !state.kinds[k]);
+      kg.appendChild(row);
+    });
+    const rg = document.getElementById("fg-relations");
+    REL_ORDER.forEach(r => {
+      const st = EDGE_STYLE[r];
+      const row = document.createElement("label"); row.className = "check"; row.setAttribute("data-rel", r);
+      const lineStyle = `border-top:${st.width < 1.5 ? 2 : 3}px ${st.dash ? "dashed" : "solid"} ${st.color}`;
+      row.innerHTML = `<input type="checkbox" ${state.relations[r] ? "checked" : ""}/><span class="box"></span><span class="line-sample" style="${lineStyle}"></span><span class="ck-label">${r}${st.arrow ? " →" : ""}</span><span class="ck-count">${relCounts[r] || 0}</span>`;
+      row.querySelector("input").addEventListener("change", e => { state.relations[r] = e.target.checked; row.classList.toggle("off", !e.target.checked); redraw(); });
+      row.classList.toggle("off", !state.relations[r]);
+      rg.appendChild(row);
+    });
+    const cg = document.getElementById("fg-confidence");
+    CONF_ORDER.forEach(c => {
+      const row = document.createElement("label"); row.className = "check"; row.setAttribute("data-conf", c);
+      const op = CONF_OPACITY[c];
+      row.innerHTML = `<input type="checkbox" ${state.confidence[c] ? "checked" : ""}/><span class="box"></span><span class="swatch" style="background:#94a3b8;opacity:${op}"></span><span class="ck-label">${c} <span style="color:var(--text-faint);font-size:10px">${CONF_DESC[c]}</span></span><span class="ck-count">${confCounts[c] || 0}</span>`;
+      row.querySelector("input").addEventListener("change", e => { state.confidence[c] = e.target.checked; row.classList.toggle("off", !e.target.checked); redraw(); });
+      row.classList.toggle("off", !state.confidence[c]);
+      cg.appendChild(row);
+    });
+
+    document.querySelectorAll(".fg-head button[data-all]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const grp = btn.getAttribute("data-all");
+        const map = grp === "kinds" ? state.kinds : grp === "relations" ? state.relations : state.confidence;
+        const anyOn = Object.values(map).some(Boolean);
+        Object.keys(map).forEach(k => map[k] = !anyOn);
+        syncFilterChecks(); redraw();
+      });
+    });
+  }
+  function syncFilterChecks() {
+    document.querySelectorAll("#fg-kinds .check").forEach(row => { const k = row.getAttribute("data-kind"); const inp = row.querySelector("input"); inp.checked = state.kinds[k]; row.classList.toggle("off", !state.kinds[k]); });
+    document.querySelectorAll("#fg-relations .check").forEach(row => { const r = row.getAttribute("data-rel"); const inp = row.querySelector("input"); inp.checked = state.relations[r]; row.classList.toggle("off", !state.relations[r]); });
+    document.querySelectorAll("#fg-confidence .check").forEach(row => { const c = row.getAttribute("data-conf"); const inp = row.querySelector("input"); inp.checked = state.confidence[c]; row.classList.toggle("off", !state.confidence[c]); });
+  }
+
+  function renderLegend() {
+    const body = document.getElementById("legend-body");
+    let h = `<div class="legend-block"><h4>Node kinds</h4>`;
+    KIND_ORDER.forEach(k => { h += `<div class="legend-row"><span class="legend-swatch">${shapeGlyph(k)}</span><span class="ck-label">${KIND_LABEL[k]}</span></div>`; });
+    h += `</div><div class="legend-block"><h4>Edge relations</h4>`;
+    REL_ORDER.forEach(r => {
+      const st = EDGE_STYLE[r];
+      h += `<div class="legend-row"><span class="line-sample" style="border-top:${st.width < 1.5 ? 2 : 3}px ${st.dash ? (st.dash.indexOf("1.5") === 0 ? "dotted" : "dashed") : "solid"} ${st.color}"></span><span class="ck-label">${r}</span>${st.arrow ? '<span style="color:var(--text-faint)">→</span>' : ""}</div>`;
+    });
+    h += `</div><div class="legend-block"><h4>Confidence</h4>`;
+    CONF_ORDER.forEach(c => { h += `<div class="legend-row"><span class="line-sample" style="border-top:3px solid #94a3b8;opacity:${CONF_OPACITY[c]}"></span><span class="ck-label">${c}</span><span style="color:var(--text-faint);font-size:10px">${Math.round(CONF_OPACITY[c] * 100)}%</span></div>`; });
+    h += `</div>`;
+    // roles + layers present
+    const roles = Array.from(new Set(nodes.map(n => n.role).filter(Boolean))).sort();
+    if (roles.length) {
+      h += `<div class="legend-block"><h4>Role rings</h4>`;
+      roles.forEach(r => { h += `<div class="legend-row"><span class="legend-swatch"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="${roleRing(r)}" stroke-width="2"/></svg></span><span class="ck-label">${escapeHtml(r)}</span></div>`; });
+      h += `</div>`;
+    }
+    const layers = Array.from(new Set(nodes.map(n => n.layer).filter(Boolean))).sort();
+    if (layers.length) {
+      h += `<div class="legend-block"><h4>Layer glow</h4>`;
+      layers.forEach(l => { h += `<div class="legend-row"><span class="legend-swatch"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="${layerColor(l)}" fill-opacity="0.55"/></svg></span><span class="ck-label">${escapeHtml(l)}</span></div>`; });
+      h += `</div>`;
+    }
+    body.innerHTML = h;
+  }
+
+  /* ---------- Search ---------- */
+  function renderSearch() {
+    const input = document.getElementById("search-input");
+    const results = document.getElementById("search-results");
+    const countTag = document.getElementById("search-count");
+    function update() {
+      state.search = input.value.trim();
+      countTag.textContent = "";
+      if (!state.search) { results.innerHTML = ""; redraw(); return; }
+      const matches = nodes.filter(searchMatch);
+      countTag.textContent = matches.length + " match" + (matches.length === 1 ? "" : "es");
+      if (!matches.length) { results.innerHTML = `<div class="result-empty">No matches.</div>`; redraw(); return; }
+      results.innerHTML = matches.slice(0, 10).map(n =>
+        `<span class="result-chip" data-id="${escapeAttr(n.id)}"><span class="dot" style="background:${NODE_COLOR[n.kind]};border-radius:${n.kind === "file" ? "1px" : "50%"}"></span><span class="rc-label">${escapeHtml(n.label)}</span></span>`
+      ).join("");
+      results.querySelectorAll(".result-chip").forEach(ch => ch.addEventListener("click", () => {
+        const id = ch.getAttribute("data-id");
+        // ensure the node's kind is enabled so it's visible
+        const n = nodesById.get(id);
+        if (!state.kinds[n.kind]) { state.kinds[n.kind] = true; syncFilterChecks(); }
+        selectNode(id); centerOnNode(n);
+      }));
+      redraw();
+    }
+    input.addEventListener("input", update);
+    document.getElementById("search-clear").addEventListener("click", () => { input.value = ""; update(); input.focus(); });
+  }
+
+  /* ---------- collapsible sections ---------- */
+  document.querySelectorAll(".section-head[data-toggle]").forEach(btn => {
+    btn.addEventListener("click", () => btn.parentElement.classList.toggle("collapsed"));
+  });
+
+  /* ---------- toolbar ---------- */
+  function setupToolbar() {
+    document.getElementById("tb-zoom-in").addEventListener("click", () => zoomTarget().transition().duration(200).call(zoom.scaleBy, 1.4));
+    document.getElementById("tb-zoom-out").addEventListener("click", () => zoomTarget().transition().duration(200).call(zoom.scaleBy, 1 / 1.4));
+    document.getElementById("tb-fit").addEventListener("click", fitView);
+    document.getElementById("tb-reset").addEventListener("click", () => {
+      defaultState(); syncFilterChecks(); hideContextBanner();
+      document.getElementById("search-input").value = ""; state.search = ""; document.getElementById("search-results").innerHTML = "";
+      state.selected = null; closeDrawer(); redraw();
+    });
+    document.getElementById("tb-theme").addEventListener("click", () => {
+      state.theme = state.theme === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", state.theme);
+      if (useCanvas) drawCanvas();
+    });
+    document.getElementById("tb-export").addEventListener("click", exportSVG);
+    document.getElementById("dr-close").addEventListener("click", () => clearSelection());
+  }
+
+  /* ---------- global dismiss ---------- */
+  document.addEventListener("click", (e) => { if (!ctxMenu.contains(e.target)) closeContextMenu(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeContextMenu(); if (state.selected) clearSelection(); else if (banner.classList.contains("show")) { state.contextFileFilter = null; state.impactSet = null; hideContextBanner(); redraw(); } }
+    if (e.key === "f" && (e.target.tagName !== "INPUT")) { e.preventDefault(); fitView(); }
+    if (e.key === "/" && e.target.tagName !== "INPUT") { e.preventDefault(); document.getElementById("search-input").focus(); }
+  });
+  window.addEventListener("scroll", closeContextMenu, true);
+
+  /* ---------- sidebar resizer ---------- */
+  (function () {
+    const rez = document.getElementById("sidebar-resizer");
+    const app = document.getElementById("app");
+    let dragging = false;
+    rez.addEventListener("mousedown", e => { dragging = true; e.preventDefault(); document.body.style.cursor = "col-resize"; });
+    window.addEventListener("mousemove", e => {
+      if (!dragging) return;
+      const w = Math.max(260, Math.min(560, e.clientX));
+      app.style.setProperty("--sidebar-w", w + "px");
+    });
+    window.addEventListener("mouseup", () => { if (dragging) { dragging = false; document.body.style.cursor = ""; onResize(); } });
+  })();
+
+  /* ---------- resize ---------- */
+  function onResize() {
+    W = mainEl.clientWidth; H = mainEl.clientHeight;
+    if (useCanvas) { sizeCanvas(); drawCanvas(); }
+  }
+  window.addEventListener("resize", onResize);
+
+  /* ====================================================================== */
+  /*  BOOT                                                                  */
+  /* ====================================================================== */
+  renderHeader();
+  renderFilters();
+  renderLegend();
+  renderSearch();
+  setupToolbar();
+  recomputeVisibility();
+  if (useCanvas) initCanvas(); else initSVG();
+  updateVisibleCount();
+  fitView();
+  document.getElementById("veil").classList.add("hide");
+})();
+</script>
+</body>
+</html>

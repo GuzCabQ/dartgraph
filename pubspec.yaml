@@ -4,7 +4,7 @@ description: >
   Diseñado para que una IA (u herramienta de análisis) entienda un proyecto
   sin leer cada archivo: identifica Widgets, Notifiers, Blocs, Controllers,
   relaciones de dependencia y nivel de confianza por cada arista.
-version: 0.1.0
+version: 0.2.0
 repository: https://github.com/GuzCabQ/dartgraph
 issue_tracker: https://github.com/GuzCabQ/dartgraph/issues
 

@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
 import '../analyzer.dart' show inferPackageName;
+import '../viewer/html_exporter.dart' show writeHtmlViewerFromJson;
 import '../config/source_graph_config.dart';
 import '../contracts/code_graph.dart';
 import '../core/builder.dart';
@@ -50,6 +51,12 @@ class BuildCommand extends Command<int> {
         defaultsTo: false,
         negatable: false,
         help: 'Omite el rebuild si el fingerprint coincide. Requiere --output.',
+      )
+      ..addFlag(
+        'html',
+        defaultsTo: false,
+        negatable: false,
+        help: 'Genera también un visor graph.html junto al JSON de salida.',
       );
   }
 
@@ -68,6 +75,7 @@ class BuildCommand extends Command<int> {
     final configPath = res['config'] as String?;
     final ensureFresh = res['ensure-fresh'] as bool;
     final resolve = res['resolve'] as bool;
+    final html = res['html'] as bool;
 
     if (ensureFresh && output == null) {
       stderr.writeln('Error: --ensure-fresh requiere --output.');
@@ -92,6 +100,17 @@ class BuildCommand extends Command<int> {
             files,
           );
           if (stored != null && stored == current) {
+            if (html) {
+              stderr.writeln(
+                'Grafo al día — sin reconstruir JSON. Regenerando visor HTML.',
+              );
+              final htmlPath = writeHtmlViewerFromJson(
+                jsonString: existing.readAsStringSync(),
+                outputDir: p.dirname(target),
+              );
+              stdout.writeln('Visor:   $htmlPath');
+              return 0;
+            }
             stderr.writeln(
               'Grafo al día (${files.length} archivos) — sin reconstruir.',
             );
@@ -148,6 +167,13 @@ class BuildCommand extends Command<int> {
 
     if (output == null) {
       stdout.writeln(encoded);
+      if (html) {
+        final htmlPath = writeHtmlViewerFromJson(
+          jsonString: encoded,
+          outputDir: './graph',
+        );
+        stderr.writeln('Visor:   $htmlPath');
+      }
       return 0;
     }
 
@@ -162,6 +188,13 @@ class BuildCommand extends Command<int> {
       stdout.writeln(
         'Escrito: ${graph.nodes.length} nodos / ${graph.edges.length} aristas → $target',
       );
+      if (html) {
+        final htmlPath = writeHtmlViewerFromJson(
+          jsonString: encoded,
+          outputDir: p.dirname(target),
+        );
+        stdout.writeln('Visor:   $htmlPath');
+      }
       return 0;
     } on FileSystemException catch (e) {
       stderr.writeln('Error al escribir graph.json: $e');
