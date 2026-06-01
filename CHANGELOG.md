@@ -1,3 +1,10 @@
+## 0.1.1
+
+- Improved README: tagline, "Who is this for?", sample report output, contributing section.
+- Added `flutter` to pub.dev topics for better discoverability.
+- Fixed dartdoc warning in `LayerConfig.paths`.
+- Added interactive viewer screenshot to documentation.
+
 ## 0.1.0
 
 Initial release.
